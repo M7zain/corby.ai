@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "corby.ai",
-  description: "Modern Ollama chat interface for corby.ai",
+  description: "Chat with corby — powered by Karacode Labs",
 };
 
 export default function RootLayout({

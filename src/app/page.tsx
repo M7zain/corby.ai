@@ -505,7 +505,7 @@ export default function Home() {
             </div>
             <h2 className="text-base font-medium text-zinc-100">Chat with corby.ai</h2>
             <p className="text-sm text-zinc-400">
-              Powered by Ollama model `corby:latest`
+              Powered by Karacode Labs — model corby
             </p>
           </div>
 
