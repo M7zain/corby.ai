@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "qwen3-vl:30b";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "corby:latest";
 
 type OllamaChatMessage = {
   role: "user" | "assistant" | "system";
