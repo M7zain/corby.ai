@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Role = "user" | "assistant";
 
@@ -20,6 +20,8 @@ type Conversation = {
 };
 
 const STORAGE_KEY = "corby-ai-conversations";
+/** Opt-in only; older key `corby-ai-think-enabled` is cleared on load so thinking stays off by default. */
+const THINK_OPT_IN_KEY = "corby-ai-think-opt-in";
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -82,7 +84,21 @@ export default function Home() {
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
   const [copiedSnippetId, setCopiedSnippetId] = useState<string | null>(null);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [thinkEnabled, setThinkEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const streamAccumRef = useRef("");
+
+  useEffect(() => {
+    window.localStorage.removeItem("corby-ai-think-enabled");
+    if (window.localStorage.getItem(THINK_OPT_IN_KEY) === "true") {
+      setThinkEnabled(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(THINK_OPT_IN_KEY, thinkEnabled ? "true" : "false");
+  }, [thinkEnabled]);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -189,6 +205,12 @@ export default function Home() {
         ? shortTitleFromMessage(text)
         : activeConversation.title;
 
+    const chatId = activeConversation.id;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    streamAccumRef.current = "";
+
     setInput("");
     setError(null);
     setIsLoading(true);
@@ -213,8 +235,10 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
+        signal: controller.signal,
         body: JSON.stringify({
           messages: updatedMessages.map(({ role, content }) => ({ role, content })),
+          think: thinkEnabled,
         }),
       });
 
@@ -243,6 +267,7 @@ export default function Home() {
           continue;
         }
         finalMessage += chunk;
+        streamAccumRef.current = finalMessage;
         setStreamingReply(finalMessage);
       }
 
@@ -259,7 +284,7 @@ export default function Home() {
 
       setConversations((prev) =>
         prev.map((chat) =>
-          chat.id === activeConversation.id
+          chat.id === chatId
             ? {
                 ...chat,
                 messages: [...chat.messages, assistantMessage],
@@ -269,11 +294,41 @@ export default function Home() {
         ),
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
+      if (err instanceof Error && err.name === "AbortError") {
+        const partial = streamAccumRef.current.trim();
+        if (partial) {
+          const assistantMessage: ChatMessage = {
+            id: uid(),
+            role: "assistant",
+            content: `${partial}\n\n_(stopped)_`,
+            createdAt: new Date().toISOString(),
+          };
+          setConversations((prev) =>
+            prev.map((chat) =>
+              chat.id === chatId
+                ? {
+                    ...chat,
+                    messages: [...chat.messages, assistantMessage],
+                    updatedAt: new Date().toISOString(),
+                  }
+                : chat,
+            ),
+          );
+        }
+        setError(null);
+      } else {
+        setError(err instanceof Error ? err.message : "Something went wrong");
+      }
     } finally {
+      abortRef.current = null;
+      streamAccumRef.current = "";
       setIsLoading(false);
       setStreamingReply("");
     }
+  }
+
+  function stopGeneration() {
+    abortRef.current?.abort();
   }
 
   const thinkingLabel =
@@ -493,6 +548,24 @@ export default function Home() {
 
           <form onSubmit={sendMessage} className="border-t border-zinc-800 p-3 sm:p-4">
             {error && <p className="mb-2 text-sm text-red-400">{error}</p>}
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-zinc-500">
+                Extended thinking is <strong className="text-zinc-400">off</strong> by default (faster). Turn on only for
+                models that support <code className="text-zinc-400">think</code>.
+              </span>
+              <button
+                type="button"
+                onClick={() => setThinkEnabled((v) => !v)}
+                aria-pressed={thinkEnabled}
+                className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                  thinkEnabled
+                    ? "border-cyan-400 bg-cyan-400/15 text-cyan-200"
+                    : "border-zinc-600 bg-zinc-900 text-zinc-400 hover:border-zinc-500"
+                }`}
+              >
+                Thinking: {thinkEnabled ? "On" : "Off"}
+              </button>
+            </div>
             <div className="flex gap-2">
               <input
                 value={input}
@@ -500,13 +573,22 @@ export default function Home() {
                 placeholder="Ask corby.ai anything..."
                 className="flex-1 rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm outline-none ring-cyan-300 placeholder:text-zinc-500 focus:ring-2"
               />
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="rounded-xl bg-cyan-400 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60 sm:px-5"
-              >
-                Send
-              </button>
+              {isLoading ? (
+                <button
+                  type="button"
+                  onClick={stopGeneration}
+                  className="shrink-0 rounded-xl border border-red-400/60 bg-red-950/50 px-4 py-3 text-sm font-semibold text-red-200 transition hover:bg-red-900/50 sm:px-5"
+                >
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  className="rounded-xl bg-cyan-400 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300 sm:px-5"
+                >
+                  Send
+                </button>
+              )}
             </div>
           </form>
         </main>

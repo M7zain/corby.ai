@@ -10,10 +10,12 @@ type OllamaChatMessage = {
 
 type ChatRequest = {
   messages?: OllamaChatMessage[];
+  /** When true, Ollama sends model “thinking” (e.g. DeepSeek-R1 style). */
+  think?: boolean;
 };
 
 type OllamaStreamChunk = {
-  message?: { content?: string };
+  message?: { content?: string; thinking?: string };
   done?: boolean;
   error?: string;
 };
@@ -22,6 +24,7 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as ChatRequest;
     const messages = body.messages || [];
+    const think = body.think === true;
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return NextResponse.json(
@@ -39,6 +42,7 @@ export async function POST(request: Request) {
         model: OLLAMA_MODEL,
         messages,
         stream: true,
+        think,
       }),
     });
 
@@ -83,18 +87,22 @@ export async function POST(request: Request) {
                 throw new Error(parsed.error);
               }
 
+              const thinking = parsed.message?.thinking || "";
               const token = parsed.message?.content || "";
-              if (token) {
-                controller.enqueue(encoder.encode(token));
+              const out = `${thinking}${token}`;
+              if (out) {
+                controller.enqueue(encoder.encode(out));
               }
             }
           }
 
           if (buffer.trim()) {
             const parsed = JSON.parse(buffer.trim()) as OllamaStreamChunk;
+            const thinking = parsed.message?.thinking || "";
             const token = parsed.message?.content || "";
-            if (token) {
-              controller.enqueue(encoder.encode(token));
+            const out = `${thinking}${token}`;
+            if (out) {
+              controller.enqueue(encoder.encode(out));
             }
           }
 
