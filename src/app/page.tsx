@@ -619,7 +619,7 @@ export default function Home() {
   }
 
   return (
-    <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+    <div className="flex h-dvh max-h-dvh min-w-0 max-w-[100vw] flex-col overflow-hidden bg-zinc-950 text-zinc-100">
       {isMobileSidebarOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/60 backdrop-blur-[2px] lg:hidden"
@@ -710,7 +710,7 @@ export default function Home() {
         </>
       )}
 
-      <div className="mx-auto flex min-h-0 flex-1 max-w-7xl gap-0 px-0 py-0 sm:gap-4 sm:px-[max(0.5rem,env(safe-area-inset-left,0px))] sm:py-2 sm:pr-[max(0.5rem,env(safe-area-inset-right,0px))] sm:pt-[max(0.25rem,env(safe-area-inset-top,0px))] sm:pb-[max(0.25rem,env(safe-area-inset-bottom,0px))] lg:flex-row lg:px-[max(0.5rem,env(safe-area-inset-left,0px))] lg:py-2 lg:pr-[max(0.5rem,env(safe-area-inset-right,0px))]">
+      <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-7xl flex-1 gap-0 px-0 py-0 sm:gap-4 sm:px-[max(0.5rem,env(safe-area-inset-left,0px))] sm:py-2 sm:pr-[max(0.5rem,env(safe-area-inset-right,0px))] sm:pt-[max(0.25rem,env(safe-area-inset-top,0px))] sm:pb-[max(0.25rem,env(safe-area-inset-bottom,0px))] lg:flex-row lg:px-[max(0.5rem,env(safe-area-inset-left,0px))] lg:py-2 lg:pr-[max(0.5rem,env(safe-area-inset-right,0px))]">
         <aside className="hidden min-h-0 w-72 shrink-0 flex-col rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4 backdrop-blur lg:flex">
           <div className="mb-4 flex items-center justify-between">
             <div>
@@ -734,8 +734,8 @@ export default function Home() {
         </aside>
 
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-0 bg-zinc-900/80 backdrop-blur sm:rounded-2xl sm:border sm:border-zinc-800">
-          <header className="shrink-0 border-b border-zinc-800/80 px-3 py-2 sm:px-5 sm:py-4">
-            <div className="flex items-center gap-2 lg:hidden">
+          <header className="min-w-0 max-w-full shrink-0 border-b border-zinc-800/80 px-3 py-2 sm:px-5 sm:py-4">
+            <div className="flex min-w-0 max-w-full items-center gap-1.5 sm:gap-2 lg:hidden">
               <button
                 type="button"
                 onClick={() => {
@@ -780,14 +780,14 @@ export default function Home() {
                 New
               </button>
             </div>
-            <div className="mt-2 flex gap-1 rounded-xl bg-zinc-950/90 p-1 lg:hidden">
+            <div className="mt-2 flex min-w-0 max-w-full gap-1 rounded-xl bg-zinc-950/90 p-1 lg:hidden">
               {CHAT_MODELS.map((m) => (
                 <button
                   key={m.id}
                   type="button"
                   disabled={isLoading}
                   onClick={() => setSelectedModel(m.id)}
-                  className={`min-h-9 flex-1 touch-manipulation rounded-lg px-2 text-xs font-medium transition disabled:opacity-50 ${
+                  className={`min-h-9 min-w-0 flex-1 touch-manipulation truncate rounded-lg px-1.5 text-center text-[11px] font-medium leading-tight transition disabled:opacity-50 sm:px-2 sm:text-xs ${
                     selectedModel === m.id
                       ? "bg-zinc-800 text-cyan-200 shadow-sm"
                       : "text-zinc-500 active:bg-zinc-800/50"
@@ -829,7 +829,7 @@ export default function Home() {
 
           <div
             ref={messagesScrollRef}
-            className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain px-2 py-3 [-webkit-overflow-scrolling:touch] sm:space-y-4 sm:p-5"
+            className="min-h-0 min-w-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto overscroll-y-contain px-2 py-3 [-webkit-overflow-scrolling:touch] sm:space-y-4 sm:p-5"
           >
             {!activeConversation || activeConversation.messages.length === 0 ? (
               <div className="rounded-xl border border-dashed border-zinc-700/80 p-4 text-center text-sm text-zinc-500 sm:rounded-2xl sm:p-6 sm:text-left sm:text-base">
@@ -885,7 +885,7 @@ export default function Home() {
 
           <form
             onSubmit={sendMessage}
-            className="shrink-0 border-t border-zinc-800/80 bg-zinc-950/40 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0px))] pt-2 sm:bg-transparent sm:p-4"
+            className="min-w-0 max-w-full shrink-0 border-t border-zinc-800/80 bg-zinc-950/40 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0px))] pt-2 sm:bg-transparent sm:p-4"
           >
             <input
               ref={fileInputRef}
@@ -977,9 +977,9 @@ export default function Home() {
             )}
 
             {selectedModel === VISION_MODEL_ID && (
-              <div className="mb-2 space-y-2 lg:hidden">
+              <div className="mb-2 min-w-0 max-w-full space-y-2 lg:hidden">
                 {isCompressingPhoto && (
-                  <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2">
+                  <div className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2">
                     <div
                       className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400"
                       aria-hidden
@@ -988,7 +988,7 @@ export default function Home() {
                   </div>
                 )}
                 {pendingImageDataUrl && !isCompressingPhoto && (
-                  <div className="flex items-center gap-2 rounded-lg border border-zinc-700/80 bg-zinc-950/60 py-1.5 pl-1.5 pr-2">
+                  <div className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg border border-zinc-700/80 bg-zinc-950/60 py-1.5 pl-1.5 pr-2">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={pendingImageDataUrl}
@@ -1009,13 +1009,13 @@ export default function Home() {
               </div>
             )}
 
-            <div className="flex items-center gap-2">
+            <div className="flex w-full min-w-0 max-w-full items-center gap-1.5 sm:gap-2">
               {selectedModel === VISION_MODEL_ID && (
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isLoading || isCompressingPhoto}
-                  className="flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded-xl border border-zinc-700 bg-zinc-950 text-zinc-400 active:bg-zinc-800 disabled:opacity-40 lg:hidden"
+                  className="box-border flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded-xl border border-zinc-700 bg-zinc-950 text-zinc-400 active:bg-zinc-800 disabled:opacity-40 lg:hidden"
                   aria-label="Add photo"
                 >
                   <svg
@@ -1047,13 +1047,13 @@ export default function Home() {
                       : "Message corby.ai…"
                 }
                 enterKeyHint="send"
-                className="min-h-11 min-w-0 flex-1 touch-manipulation rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-3 text-base outline-none ring-cyan-300 placeholder:text-zinc-500 focus:ring-2 sm:min-h-10 sm:px-4 sm:text-sm"
+                className="min-h-11 min-w-0 flex-1 basis-0 touch-manipulation rounded-xl border border-zinc-700 bg-zinc-950 px-2.5 py-3 text-base outline-none ring-cyan-300 placeholder:text-zinc-500 focus:ring-2 sm:min-h-10 sm:px-4 sm:text-sm"
               />
               {isLoading ? (
                 <button
                   type="button"
                   onClick={stopGeneration}
-                  className="flex h-11 min-w-[4.5rem] shrink-0 touch-manipulation items-center justify-center rounded-xl border border-red-400/60 bg-red-950/50 px-3 text-sm font-semibold text-red-200 active:bg-red-900/60 sm:min-w-[5.5rem] sm:px-4"
+                  className="box-border flex h-11 min-w-0 shrink-0 touch-manipulation items-center justify-center rounded-xl border border-red-400/60 bg-red-950/50 px-2.5 text-sm font-semibold text-red-200 active:bg-red-900/60 sm:min-w-[5rem] sm:px-4"
                 >
                   Stop
                 </button>
@@ -1061,7 +1061,7 @@ export default function Home() {
                 <button
                   type="submit"
                   disabled={isCompressingPhoto}
-                  className="flex h-11 min-w-[4.5rem] shrink-0 touch-manipulation items-center justify-center rounded-xl bg-cyan-400 px-3 text-sm font-semibold text-zinc-950 active:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[5.5rem] sm:px-4"
+                  className="box-border flex h-11 min-w-0 shrink-0 touch-manipulation items-center justify-center rounded-xl bg-cyan-400 px-2.5 text-sm font-semibold text-zinc-950 active:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[5rem] sm:px-4"
                 >
                   Send
                 </button>
