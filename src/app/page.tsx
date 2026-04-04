@@ -27,6 +27,9 @@ const STORAGE_KEY = "corby-ai-conversations";
 const THINK_OPT_IN_KEY = "corby-ai-think-opt-in";
 const SELECTED_MODEL_KEY = "corby-ai-selected-model";
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+/** Downscale camera shots so the UI stays responsive and payloads stay reasonable. */
+const IMAGE_MAX_EDGE_PX = 1792;
+const JPEG_QUALITY = 0.82;
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -104,6 +107,81 @@ function toApiMessages(messages: ChatMessage[], model: string) {
   });
 }
 
+function isProbablyImageFile(file: File): boolean {
+  if (file.type.startsWith("image/")) {
+    return true;
+  }
+  if (!file.type || file.type === "application/octet-stream") {
+    return /\.(jpe?g|png|gif|webp|heif|heic|bmp)$/i.test(file.name);
+  }
+  return false;
+}
+
+/**
+ * Camera photos are huge; reading them as one giant data URL freezes mobile browsers.
+ * Decode from a blob URL, draw scaled to canvas, export JPEG.
+ */
+async function compressImageFileToDataUrl(file: File): Promise<string> {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = objectUrl;
+    if (typeof img.decode === "function") {
+      await img.decode();
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("decode"));
+      });
+    }
+
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    if (!w || !h) {
+      throw new Error("bad dims");
+    }
+
+    const scale = Math.min(1, IMAGE_MAX_EDGE_PX / Math.max(w, h));
+    const tw = Math.max(1, Math.round(w * scale));
+    const th = Math.max(1, Math.round(h * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = tw;
+    canvas.height = th;
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) {
+      throw new Error("no ctx");
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, 0, 0, tw, th);
+
+    let dataUrl = canvas.toDataURL("image/jpeg", JPEG_QUALITY);
+    if (dataUrl.length > 4_200_000) {
+      dataUrl = canvas.toDataURL("image/jpeg", 0.68);
+    }
+    return dataUrl;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const r = reader.result;
+      if (typeof r === "string") {
+        resolve(r);
+      } else {
+        reject(new Error("read"));
+      }
+    };
+    reader.onerror = () => reject(new Error("read"));
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -121,6 +199,8 @@ export default function Home() {
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendingImageDataUrl, setPendingImageDataUrl] = useState<string | null>(null);
+  const [isCompressingPhoto, setIsCompressingPhoto] = useState(false);
+  const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
 
   useEffect(() => {
     window.localStorage.removeItem("corby-ai-think-enabled");
@@ -247,13 +327,13 @@ export default function Home() {
     });
   }
 
-  function onPickImage(event: ChangeEvent<HTMLInputElement>) {
+  async function onPickImage(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) {
       return;
     }
-    if (!file.type.startsWith("image/")) {
+    if (!isProbablyImageFile(file)) {
       setError("Please choose an image file.");
       return;
     }
@@ -261,16 +341,27 @@ export default function Home() {
       setError(`Image must be under ${MAX_IMAGE_BYTES / (1024 * 1024)} MB.`);
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result === "string") {
-        setPendingImageDataUrl(result);
-        setError(null);
+
+    setIsCompressingPhoto(true);
+    setError(null);
+
+    await new Promise<void>((r) => {
+      requestAnimationFrame(() => r());
+    });
+
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file);
+      setPendingImageDataUrl(dataUrl);
+    } catch {
+      try {
+        const fallback = await readFileAsDataUrl(file);
+        setPendingImageDataUrl(fallback);
+      } catch {
+        setError("Could not process that photo. Try again or pick from your gallery.");
       }
-    };
-    reader.onerror = () => setError("Could not read that image.");
-    reader.readAsDataURL(file);
+    } finally {
+      setIsCompressingPhoto(false);
+    }
   }
 
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
@@ -278,7 +369,7 @@ export default function Home() {
     const text = input.trim();
     const hasVisionImage =
       selectedModel === VISION_MODEL_ID && pendingImageDataUrl !== null;
-    if ((!text && !hasVisionImage) || !activeConversation || isLoading) {
+    if ((!text && !hasVisionImage) || !activeConversation || isLoading || isCompressingPhoto) {
       return;
     }
 
@@ -571,7 +662,55 @@ export default function Home() {
         </div>
       </aside>
 
-      <div className="mx-auto flex min-h-0 flex-1 max-w-7xl gap-2 px-[max(0.5rem,env(safe-area-inset-left,0px))] py-2 pr-[max(0.5rem,env(safe-area-inset-right,0px))] pt-[max(0.25rem,env(safe-area-inset-top,0px))] pb-[max(0.25rem,env(safe-area-inset-bottom,0px))] sm:gap-4 sm:p-4 lg:flex-row">
+      {mobileOptionsOpen && (
+        <>
+          <div
+            className="fixed inset-0 z-[60] bg-black/50 lg:hidden"
+            onClick={() => setMobileOptionsOpen(false)}
+            aria-hidden
+          />
+          <div
+            className="fixed inset-x-0 bottom-0 z-[70] max-h-[min(85dvh,32rem)] overflow-y-auto rounded-t-2xl border border-zinc-700 border-b-0 bg-zinc-900 shadow-2xl lg:hidden"
+            role="dialog"
+            aria-labelledby="mobile-options-title"
+          >
+            <div className="sticky top-0 flex justify-center bg-zinc-900 pb-2 pt-3">
+              <div className="h-1 w-10 rounded-full bg-zinc-600" aria-hidden />
+            </div>
+            <div className="px-4 pb-[max(1.25rem,env(safe-area-inset-bottom,0px))] pt-1">
+              <h3 id="mobile-options-title" className="text-base font-semibold text-zinc-100">
+                Chat options
+              </h3>
+              <p className="mt-1 text-xs text-zinc-500">
+                Extended thinking is slower. Use only if your model supports it.
+              </p>
+              <button
+                type="button"
+                onClick={() => setThinkEnabled((v) => !v)}
+                aria-pressed={thinkEnabled}
+                className={`mt-4 flex min-h-12 w-full touch-manipulation items-center justify-between rounded-xl border px-4 text-sm font-medium ${
+                  thinkEnabled
+                    ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-100"
+                    : "border-zinc-700 bg-zinc-950 text-zinc-300"
+                }`}
+              >
+                <span>Thinking mode</span>
+                <span className="text-xs opacity-80">{thinkEnabled ? "On" : "Off"}</span>
+              </button>
+              <p className="mt-6 text-center text-[11px] text-zinc-600">Karacode Labs</p>
+              <button
+                type="button"
+                onClick={() => setMobileOptionsOpen(false)}
+                className="mt-3 min-h-12 w-full touch-manipulation rounded-xl bg-zinc-800 py-3 text-sm font-medium text-zinc-100 active:bg-zinc-700"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      <div className="mx-auto flex min-h-0 flex-1 max-w-7xl gap-0 px-0 py-0 sm:gap-4 sm:px-[max(0.5rem,env(safe-area-inset-left,0px))] sm:py-2 sm:pr-[max(0.5rem,env(safe-area-inset-right,0px))] sm:pt-[max(0.25rem,env(safe-area-inset-top,0px))] sm:pb-[max(0.25rem,env(safe-area-inset-bottom,0px))] lg:flex-row lg:px-[max(0.5rem,env(safe-area-inset-left,0px))] lg:py-2 lg:pr-[max(0.5rem,env(safe-area-inset-right,0px))]">
         <aside className="hidden min-h-0 w-72 shrink-0 flex-col rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4 backdrop-blur lg:flex">
           <div className="mb-4 flex items-center justify-between">
             <div>
@@ -594,62 +733,110 @@ export default function Home() {
           </div>
         </aside>
 
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/80 backdrop-blur sm:rounded-2xl">
-          <header className="shrink-0 border-b border-zinc-800 px-3 py-3 sm:px-5 sm:py-4">
-            <div className="mb-2 flex items-center gap-2 lg:hidden">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-0 bg-zinc-900/80 backdrop-blur sm:rounded-2xl sm:border sm:border-zinc-800">
+          <header className="shrink-0 border-b border-zinc-800/80 px-3 py-2 sm:px-5 sm:py-4">
+            <div className="flex items-center gap-2 lg:hidden">
               <button
                 type="button"
-                onClick={() => setIsMobileSidebarOpen(true)}
-                className="min-h-11 min-w-11 shrink-0 touch-manipulation rounded-xl border border-zinc-700 px-3 text-sm text-zinc-200 active:bg-zinc-800"
-                aria-label="Open conversations"
+                onClick={() => {
+                  setMobileOptionsOpen(false);
+                  setIsMobileSidebarOpen(true);
+                }}
+                className="flex min-h-10 min-w-10 shrink-0 touch-manipulation items-center justify-center rounded-xl border border-zinc-700 text-zinc-200 active:bg-zinc-800"
+                aria-label="Chats"
               >
-                ☰
+                <span className="text-lg leading-none">≡</span>
               </button>
-              <div className="min-w-0 flex-1">
-                <h2 className="truncate text-base font-medium text-zinc-100">corby.ai</h2>
-              </div>
+              <h2 className="min-w-0 flex-1 truncate text-center text-sm font-semibold tracking-tight text-zinc-100">
+                corby.ai
+              </h2>
+              <button
+                type="button"
+                onClick={() => setMobileOptionsOpen(true)}
+                className="flex min-h-10 min-w-10 shrink-0 touch-manipulation items-center justify-center rounded-xl border border-zinc-700 text-zinc-300 active:bg-zinc-800"
+                aria-label="Chat options"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                </svg>
+              </button>
               <button
                 type="button"
                 onClick={createConversation}
-                className="min-h-11 shrink-0 touch-manipulation rounded-xl bg-cyan-400 px-4 text-sm font-medium text-zinc-950 active:bg-cyan-300"
+                className="min-h-10 shrink-0 touch-manipulation rounded-xl bg-cyan-400 px-3 text-sm font-semibold text-zinc-950 active:bg-cyan-300"
               >
                 New
               </button>
             </div>
-            <h2 className="hidden text-base font-medium text-zinc-100 lg:block">Chat with corby.ai</h2>
-            <p className="mt-0.5 text-xs leading-snug text-zinc-400 sm:text-sm">
-              Karacode Labs · <span className="text-zinc-300">{selectedModelLabel}</span>
-            </p>
-            <label htmlFor="model-select" className="mt-3 block text-xs font-medium text-zinc-500">
-              Model
-            </label>
-            <select
-              id="model-select"
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              disabled={isLoading}
-              className="mt-1.5 h-11 w-full min-h-11 touch-manipulation rounded-xl border border-zinc-700 bg-zinc-950 px-3 text-base text-zinc-100 outline-none ring-cyan-300 focus:ring-2 disabled:opacity-50 sm:h-10 sm:max-w-xs sm:min-h-10 sm:text-sm"
-            >
+            <div className="mt-2 flex gap-1 rounded-xl bg-zinc-950/90 p-1 lg:hidden">
               {CHAT_MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
+                <button
+                  key={m.id}
+                  type="button"
+                  disabled={isLoading}
+                  onClick={() => setSelectedModel(m.id)}
+                  className={`min-h-9 flex-1 touch-manipulation rounded-lg px-2 text-xs font-medium transition disabled:opacity-50 ${
+                    selectedModel === m.id
+                      ? "bg-zinc-800 text-cyan-200 shadow-sm"
+                      : "text-zinc-500 active:bg-zinc-800/50"
+                  }`}
+                >
                   {m.label}
-                </option>
+                </button>
               ))}
-            </select>
-            {selectedModel === VISION_MODEL_ID && (
-              <p className="mt-2 text-xs leading-relaxed text-zinc-500">
-                Photo upload works only with <span className="text-zinc-400">corby 2.0</span> (vision).
+            </div>
+
+            <div className="hidden lg:block">
+              <h2 className="text-base font-medium text-zinc-100">Chat with corby.ai</h2>
+              <p className="mt-0.5 text-sm text-zinc-400">
+                Karacode Labs · <span className="text-zinc-300">{selectedModelLabel}</span>
               </p>
-            )}
+              <label htmlFor="model-select" className="mt-3 block text-xs font-medium text-zinc-500">
+                Model
+              </label>
+              <select
+                id="model-select"
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                disabled={isLoading}
+                className="mt-1.5 h-10 max-w-xs min-h-10 w-full touch-manipulation rounded-xl border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none ring-cyan-300 focus:ring-2 disabled:opacity-50"
+              >
+                {CHAT_MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+              {selectedModel === VISION_MODEL_ID && (
+                <p className="mt-2 text-xs text-zinc-500">
+                  Photo analysis with <span className="text-zinc-400">corby 2.0</span>.
+                </p>
+              )}
+            </div>
           </header>
 
           <div
             ref={messagesScrollRef}
-            className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain p-3 [-webkit-overflow-scrolling:touch] sm:space-y-4 sm:p-5"
+            className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain px-2 py-3 [-webkit-overflow-scrolling:touch] sm:space-y-4 sm:p-5"
           >
             {!activeConversation || activeConversation.messages.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-zinc-700 p-5 text-sm leading-relaxed text-zinc-400 sm:p-6">
-                Start a conversation — corby.ai will remember it in this browser.
+              <div className="rounded-xl border border-dashed border-zinc-700/80 p-4 text-center text-sm text-zinc-500 sm:rounded-2xl sm:p-6 sm:text-left sm:text-base">
+                <span className="lg:hidden">Message below to start. Chats save in this browser.</span>
+                <span className="hidden lg:inline">
+                  Start a conversation — corby.ai will remember it in this browser.
+                </span>
               </div>
             ) : (
               activeConversation.messages.map((message) => (
@@ -698,38 +885,22 @@ export default function Home() {
 
           <form
             onSubmit={sendMessage}
-            className="shrink-0 border-t border-zinc-800 bg-zinc-900/90 p-3 sm:bg-transparent sm:p-4"
+            className="shrink-0 border-t border-zinc-800/80 bg-zinc-950/40 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0px))] pt-2 sm:bg-transparent sm:p-4"
           >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="sr-only"
+              onChange={onPickImage}
+              aria-label="Upload or capture image for analysis"
+            />
             {error && (
               <p className="mb-2 rounded-lg bg-red-950/40 px-3 py-2 text-sm text-red-300" role="alert">
                 {error}
               </p>
             )}
-            <details className="mb-3 rounded-xl border border-zinc-800 bg-zinc-950/50 sm:hidden">
-              <summary className="cursor-pointer list-none px-3 py-2.5 text-sm font-medium text-zinc-400 [&::-webkit-details-marker]:hidden">
-                <span className="flex items-center justify-between gap-2">
-                  Advanced · thinking
-                  <span className="text-xs text-zinc-500">{thinkEnabled ? "On" : "Off"}</span>
-                </span>
-              </summary>
-              <div className="border-t border-zinc-800 px-3 py-3">
-                <p className="mb-3 text-xs leading-relaxed text-zinc-500">
-                  Slower on some models. Only enable if your model supports <code className="text-zinc-400">think</code>.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setThinkEnabled((v) => !v)}
-                  aria-pressed={thinkEnabled}
-                  className={`min-h-11 w-full touch-manipulation rounded-xl border px-4 text-sm font-medium transition active:opacity-90 ${
-                    thinkEnabled
-                      ? "border-cyan-400 bg-cyan-400/15 text-cyan-200"
-                      : "border-zinc-600 bg-zinc-900 text-zinc-300"
-                  }`}
-                >
-                  Thinking: {thinkEnabled ? "On" : "Off"}
-                </button>
-              </div>
-            </details>
+
             <div className="mb-3 hidden flex-wrap items-center justify-between gap-3 sm:flex">
               <span className="max-w-xl text-xs text-zinc-500">
                 Extended thinking is <strong className="text-zinc-400">off</strong> by default (faster). Turn on only for
@@ -748,17 +919,21 @@ export default function Home() {
                 Thinking: {thinkEnabled ? "On" : "Off"}
               </button>
             </div>
+
             {selectedModel === VISION_MODEL_ID && (
-              <div className="mb-3 rounded-xl border border-zinc-700/80 bg-zinc-950/60 p-3">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="sr-only"
-                  onChange={onPickImage}
-                  aria-label="Upload image for analysis"
-                />
-                {pendingImageDataUrl ? (
+              <div className="mb-2 hidden lg:mb-3 lg:block lg:rounded-xl lg:border lg:border-zinc-700/80 lg:bg-zinc-950/60 lg:p-3">
+                {isCompressingPhoto ? (
+                  <div className="flex min-h-24 flex-col items-center justify-center gap-2 py-4">
+                    <div
+                      className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400"
+                      aria-hidden
+                    />
+                    <p className="text-center text-sm text-zinc-400">Optimizing photo…</p>
+                    <p className="text-center text-xs text-zinc-500">
+                      Large camera files are resized so the page stays fast.
+                    </p>
+                  </div>
+                ) : pendingImageDataUrl ? (
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
                     {/* eslint-disable-next-line @next/next/no-img-element -- user data URL preview */}
                     <img
@@ -770,7 +945,7 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
-                        disabled={isLoading}
+                        disabled={isLoading || isCompressingPhoto}
                         className="min-h-10 touch-manipulation rounded-lg border border-zinc-600 px-3 py-2 text-xs font-medium text-zinc-300 active:bg-zinc-800 disabled:opacity-50"
                       >
                         Change photo
@@ -778,7 +953,7 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={() => setPendingImageDataUrl(null)}
-                        disabled={isLoading}
+                        disabled={isLoading || isCompressingPhoto}
                         className="min-h-10 touch-manipulation rounded-lg border border-red-500/40 px-3 py-2 text-xs font-medium text-red-300 active:bg-red-950/50 disabled:opacity-50"
                       >
                         Remove
@@ -786,41 +961,107 @@ export default function Home() {
                     </div>
                   </div>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={isLoading}
-                    className="flex min-h-11 w-full touch-manipulation items-center justify-center rounded-xl border border-dashed border-cyan-500/40 bg-cyan-500/5 px-4 py-3 text-sm font-medium text-cyan-200/90 active:bg-cyan-500/10 disabled:opacity-50 sm:w-auto sm:px-6"
-                  >
-                    Add photo to analyze
-                  </button>
+                  <div className="flex flex-col gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isLoading || isCompressingPhoto}
+                      className="flex min-h-11 w-full touch-manipulation items-center justify-center rounded-xl border border-dashed border-cyan-500/40 bg-cyan-500/5 px-4 py-3 text-sm font-medium text-cyan-200/90 active:bg-cyan-500/10 disabled:opacity-50 sm:w-auto sm:px-6"
+                    >
+                      Add photo to analyze
+                    </button>
+                    <p className="text-xs text-zinc-500">Camera or gallery — photos are resized automatically.</p>
+                  </div>
                 )}
               </div>
             )}
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+
+            {selectedModel === VISION_MODEL_ID && (
+              <div className="mb-2 space-y-2 lg:hidden">
+                {isCompressingPhoto && (
+                  <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2">
+                    <div
+                      className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400"
+                      aria-hidden
+                    />
+                    <span className="text-xs text-zinc-400">Optimizing photo…</span>
+                  </div>
+                )}
+                {pendingImageDataUrl && !isCompressingPhoto && (
+                  <div className="flex items-center gap-2 rounded-lg border border-zinc-700/80 bg-zinc-950/60 py-1.5 pl-1.5 pr-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={pendingImageDataUrl}
+                      alt=""
+                      className="h-11 w-11 shrink-0 rounded-md object-cover"
+                    />
+                    <span className="min-w-0 flex-1 truncate text-xs text-zinc-500">Ready to send</span>
+                    <button
+                      type="button"
+                      onClick={() => setPendingImageDataUrl(null)}
+                      disabled={isLoading}
+                      className="shrink-0 touch-manipulation rounded-lg px-2 py-1.5 text-xs font-medium text-red-300 active:bg-red-950/30"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              {selectedModel === VISION_MODEL_ID && (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isLoading || isCompressingPhoto}
+                  className="flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded-xl border border-zinc-700 bg-zinc-950 text-zinc-400 active:bg-zinc-800 disabled:opacity-40 lg:hidden"
+                  aria-label="Add photo"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+                    <circle cx="9" cy="9" r="2" />
+                    <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+                  </svg>
+                </button>
+              )}
               <input
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 placeholder={
                   selectedModel === VISION_MODEL_ID && pendingImageDataUrl
-                    ? "Optional: ask about the photo…"
-                    : "Message corby.ai…"
+                    ? "Ask about the photo…"
+                    : selectedModel === VISION_MODEL_ID
+                      ? "Message or attach a photo…"
+                      : "Message corby.ai…"
                 }
                 enterKeyHint="send"
-                className="min-h-11 w-full flex-1 touch-manipulation rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-base outline-none ring-cyan-300 placeholder:text-zinc-500 focus:ring-2 sm:min-h-10 sm:text-sm"
+                className="min-h-11 min-w-0 flex-1 touch-manipulation rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-3 text-base outline-none ring-cyan-300 placeholder:text-zinc-500 focus:ring-2 sm:min-h-10 sm:px-4 sm:text-sm"
               />
               {isLoading ? (
                 <button
                   type="button"
                   onClick={stopGeneration}
-                  className="min-h-11 w-full touch-manipulation rounded-xl border border-red-400/60 bg-red-950/50 px-4 text-sm font-semibold text-red-200 transition active:bg-red-900/60 sm:min-w-[5.5rem] sm:w-auto"
+                  className="flex h-11 min-w-[4.5rem] shrink-0 touch-manipulation items-center justify-center rounded-xl border border-red-400/60 bg-red-950/50 px-3 text-sm font-semibold text-red-200 active:bg-red-900/60 sm:min-w-[5.5rem] sm:px-4"
                 >
                   Stop
                 </button>
               ) : (
                 <button
                   type="submit"
-                  className="min-h-11 w-full touch-manipulation rounded-xl bg-cyan-400 px-4 text-sm font-semibold text-zinc-950 transition active:bg-cyan-300 sm:min-w-[5.5rem] sm:w-auto"
+                  disabled={isCompressingPhoto}
+                  className="flex h-11 min-w-[4.5rem] shrink-0 touch-manipulation items-center justify-center rounded-xl bg-cyan-400 px-3 text-sm font-semibold text-zinc-950 active:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[5.5rem] sm:px-4"
                 >
                   Send
                 </button>
