@@ -4,26 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { type ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { signOut, useSession } from "next-auth/react";
+import type { ChatMessage, ChatMessageRole, Conversation } from "@/lib/conversation-types";
 import { CHAT_MODELS, VISION_MODEL_ID } from "@/lib/chat-models";
-
-type Role = "user" | "assistant";
-
-type ChatMessage = {
-  id: string;
-  role: Role;
-  content: string;
-  createdAt: string;
-  /** Data URLs for display & storage; sent as raw base64 when using the vision model. */
-  imageDataUrls?: string[];
-};
-
-type Conversation = {
-  id: string;
-  title: string;
-  createdAt: string;
-  updatedAt: string;
-  messages: ChatMessage[];
-};
 
 const STORAGE_KEY = "corby-ai-conversations";
 /** Opt-in only; older key `corby-ai-think-enabled` is cleared on load so thinking stays off by default. */
@@ -99,7 +81,7 @@ function dataUrlToBase64(dataUrl: string): string {
 function toApiMessages(messages: ChatMessage[], model: string) {
   const allowImages = model === VISION_MODEL_ID;
   return messages.map((m) => {
-    const row: { role: Role; content: string; images?: string[] } = {
+    const row: { role: ChatMessageRole; content: string; images?: string[] } = {
       role: m.role,
       content: m.content,
     };
@@ -207,6 +189,19 @@ export default function Home() {
   const [pendingImageDataUrl, setPendingImageDataUrl] = useState<string | null>(null);
   const [isCompressingPhoto, setIsCompressingPhoto] = useState(false);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
+  const [remoteReady, setRemoteReady] = useState(false);
+  const conversationsRef = useRef<Conversation[]>([]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  function signOutAndPersistLocal() {
+    if (typeof window !== "undefined" && conversationsRef.current.length > 0) {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(conversationsRef.current));
+    }
+    void signOut({ callbackUrl: "/login" });
+  }
 
   useEffect(() => {
     window.localStorage.removeItem("corby-ai-think-enabled");
@@ -233,7 +228,7 @@ export default function Home() {
     }
   }, [selectedModel]);
 
-  useEffect(() => {
+  function loadConversationsFromLocalStorage(): Conversation[] {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) {
       const starter: Conversation = {
@@ -243,28 +238,124 @@ export default function Home() {
         updatedAt: new Date().toISOString(),
         messages: [],
       };
-      setConversations([starter]);
-      setActiveId(starter.id);
+      return [starter];
+    }
+    try {
+      const parsed = JSON.parse(raw) as Conversation[];
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        throw new Error("No conversations");
+      }
+      return parsed;
+    } catch {
+      window.localStorage.removeItem(STORAGE_KEY);
+      const starter: Conversation = {
+        id: uid(),
+        title: "New chat",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [],
+      };
+      return [starter];
+    }
+  }
+
+  useEffect(() => {
+    if (sessionStatus === "loading") {
       return;
     }
 
-    try {
-      const parsed = JSON.parse(raw) as Conversation[];
-      if (parsed.length === 0) {
-        throw new Error("No conversations");
-      }
-      setConversations(parsed);
-      setActiveId(parsed[0].id);
-    } catch {
-      window.localStorage.removeItem(STORAGE_KEY);
+    if (sessionStatus === "unauthenticated") {
+      setRemoteReady(false);
+      const next = loadConversationsFromLocalStorage();
+      setConversations(next);
+      setActiveId(next[0]?.id ?? null);
+      return;
     }
-  }, []);
+
+    let cancelled = false;
+    setRemoteReady(false);
+
+    (async () => {
+      try {
+        const res = await fetch("/api/conversations", { credentials: "include" });
+        const data = (await res.json().catch(() => ({}))) as {
+          conversations?: Conversation[];
+          error?: string;
+        };
+        if (cancelled) {
+          return;
+        }
+
+        if (res.status === 503 || res.status === 401 || !res.ok) {
+          const next = loadConversationsFromLocalStorage();
+          setConversations(next);
+          setActiveId(next[0]?.id ?? null);
+          setRemoteReady(false);
+          return;
+        }
+
+        const list = data.conversations ?? [];
+        if (list.length > 0) {
+          setConversations(list);
+          setActiveId(list[0].id);
+          setRemoteReady(true);
+          return;
+        }
+
+        const next = loadConversationsFromLocalStorage();
+        setConversations(next);
+        setActiveId(next[0].id);
+        await fetch("/api/conversations", {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversations: next }),
+        });
+        if (!cancelled) {
+          setRemoteReady(true);
+        }
+      } catch {
+        if (!cancelled) {
+          const next = loadConversationsFromLocalStorage();
+          setConversations(next);
+          setActiveId(next[0]?.id ?? null);
+          setRemoteReady(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionStatus]);
 
   useEffect(() => {
+    if (sessionStatus !== "unauthenticated") {
+      return;
+    }
     if (conversations.length > 0) {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
     }
-  }, [conversations]);
+  }, [conversations, sessionStatus]);
+
+  useEffect(() => {
+    if (sessionStatus !== "authenticated" || !remoteReady) {
+      return;
+    }
+    if (conversations.length === 0) {
+      return;
+    }
+    const t = window.setTimeout(() => {
+      const payload = conversationsRef.current;
+      void fetch("/api/conversations", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversations: payload }),
+      });
+    }, 700);
+    return () => window.clearTimeout(t);
+  }, [conversations, sessionStatus, remoteReady]);
 
   useEffect(() => {
     if (!isLoading) {
@@ -743,6 +834,52 @@ export default function Home() {
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-y-contain [-webkit-overflow-scrolling:touch]">
           {renderConversationsList(true)}
         </div>
+        <div className="mt-auto shrink-0 border-t border-zinc-800 pt-3">
+          <p className="text-xs font-medium text-zinc-400">Account</p>
+          {sessionStatus === "authenticated" && session?.user?.email ? (
+            <>
+              <p className="mt-1 truncate text-xs text-zinc-500">{session.user.email}</p>
+              <div className="mt-2 flex flex-col gap-2">
+                {session.user.role === "admin" && (
+                  <Link
+                    href="/admin"
+                    className="min-h-10 touch-manipulation rounded-xl border border-zinc-700 py-2.5 text-center text-sm text-cyan-300"
+                    onClick={() => setIsMobileSidebarOpen(false)}
+                  >
+                    Admin
+                  </Link>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileSidebarOpen(false);
+                    signOutAndPersistLocal();
+                  }}
+                  className="min-h-10 w-full touch-manipulation rounded-xl border border-zinc-600 py-2.5 text-sm text-zinc-300 active:bg-zinc-800"
+                >
+                  Sign out
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="mt-2 flex flex-col gap-2">
+              <Link
+                href={loginWithReturnHref}
+                className="min-h-10 touch-manipulation rounded-xl bg-cyan-400 py-2.5 text-center text-sm font-semibold text-zinc-950"
+                onClick={() => setIsMobileSidebarOpen(false)}
+              >
+                Sign in
+              </Link>
+              <Link
+                href={registerWithReturnHref}
+                className="min-h-10 touch-manipulation rounded-xl border border-zinc-600 py-2.5 text-center text-sm text-zinc-200"
+                onClick={() => setIsMobileSidebarOpen(false)}
+              >
+                Register
+              </Link>
+            </div>
+          )}
+        </div>
       </aside>
 
       {mobileOptionsOpen && (
@@ -799,7 +936,7 @@ export default function Home() {
                         type="button"
                         onClick={() => {
                           setMobileOptionsOpen(false);
-                          void signOut({ callbackUrl: "/login" });
+                          signOutAndPersistLocal();
                         }}
                         className="min-h-11 w-full touch-manipulation rounded-xl border border-zinc-600 py-3 text-sm text-zinc-300"
                       >
@@ -948,7 +1085,7 @@ export default function Home() {
                       )}
                       <button
                         type="button"
-                        onClick={() => void signOut({ callbackUrl: "/login" })}
+                        onClick={() => signOutAndPersistLocal()}
                         className="rounded-lg border border-zinc-600 px-2 py-1 text-zinc-300 transition hover:border-zinc-500"
                       >
                         Sign out

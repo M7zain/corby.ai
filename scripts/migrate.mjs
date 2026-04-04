@@ -72,7 +72,7 @@ try {
       throw e;
     }
   }
-  console.log("Migration OK: question_events + users ready.");
+  console.log("Migration OK: question_events + users + conversations ready.");
 } finally {
   await conn.end();
 }
