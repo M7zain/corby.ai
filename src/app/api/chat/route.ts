@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { ALLOWED_CHAT_MODEL_IDS } from "@/lib/chat-models";
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "corby:latest";
@@ -12,6 +13,8 @@ type ChatRequest = {
   messages?: OllamaChatMessage[];
   /** When true, Ollama sends model “thinking” (e.g. DeepSeek-R1 style). */
   think?: boolean;
+  /** Must be in ALLOWED_CHAT_MODEL_IDS; otherwise server falls back to OLLAMA_MODEL. */
+  model?: string;
 };
 
 type OllamaStreamChunk = {
@@ -25,6 +28,10 @@ export async function POST(request: Request) {
     const body = (await request.json()) as ChatRequest;
     const messages = body.messages || [];
     const think = body.think === true;
+    const requestedModel =
+      typeof body.model === "string" && ALLOWED_CHAT_MODEL_IDS.has(body.model)
+        ? body.model
+        : OLLAMA_MODEL;
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return NextResponse.json(
@@ -39,7 +46,7 @@ export async function POST(request: Request) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: OLLAMA_MODEL,
+        model: requestedModel,
         messages,
         stream: true,
         think,

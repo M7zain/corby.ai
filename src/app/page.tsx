@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { CHAT_MODELS } from "@/lib/chat-models";
 
 type Role = "user" | "assistant";
 
@@ -22,6 +23,7 @@ type Conversation = {
 const STORAGE_KEY = "corby-ai-conversations";
 /** Opt-in only; older key `corby-ai-think-enabled` is cleared on load so thinking stays off by default. */
 const THINK_OPT_IN_KEY = "corby-ai-think-opt-in";
+const SELECTED_MODEL_KEY = "corby-ai-selected-model";
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -85,20 +87,30 @@ export default function Home() {
   const [copiedSnippetId, setCopiedSnippetId] = useState<string | null>(null);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [thinkEnabled, setThinkEnabled] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(CHAT_MODELS[0].id);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const streamAccumRef = useRef("");
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     window.localStorage.removeItem("corby-ai-think-enabled");
     if (window.localStorage.getItem(THINK_OPT_IN_KEY) === "true") {
       setThinkEnabled(true);
     }
+    const savedModel = window.localStorage.getItem(SELECTED_MODEL_KEY);
+    if (savedModel && CHAT_MODELS.some((m) => m.id === savedModel)) {
+      setSelectedModel(savedModel);
+    }
   }, []);
 
   useEffect(() => {
     window.localStorage.setItem(THINK_OPT_IN_KEY, thinkEnabled ? "true" : "false");
   }, [thinkEnabled]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SELECTED_MODEL_KEY, selectedModel);
+  }, [selectedModel]);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -150,6 +162,21 @@ export default function Home() {
     () => conversations.find((chat) => chat.id === activeId) ?? null,
     [activeId, conversations],
   );
+
+  useEffect(() => {
+    const el = messagesScrollRef.current;
+    if (!el) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
+    });
+  }, [
+    activeConversation?.messages.length,
+    streamingReply,
+    activeId,
+    isLoading,
+  ]);
 
   function createConversation() {
     const fresh: Conversation = {
@@ -239,6 +266,7 @@ export default function Home() {
         body: JSON.stringify({
           messages: updatedMessages.map(({ role, content }) => ({ role, content })),
           think: thinkEnabled,
+          model: selectedModel,
         }),
       });
 
@@ -338,6 +366,9 @@ export default function Home() {
         ? "Analyzing context..."
         : "Drafting a detailed response...";
 
+  const selectedModelLabel =
+    CHAT_MODELS.find((m) => m.id === selectedModel)?.label ?? selectedModel;
+
   async function copyCode(snippetId: string, value: string) {
     try {
       await navigator.clipboard.writeText(value);
@@ -362,19 +393,19 @@ export default function Home() {
                 key={snippetId}
                 className="overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950"
               >
-                <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900 px-3 py-2">
-                  <span className="text-xs uppercase tracking-wider text-zinc-400">
+                <div className="flex min-h-11 items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-2">
+                  <span className="truncate text-xs uppercase tracking-wider text-zinc-400">
                     {block.language}
                   </span>
                   <button
                     type="button"
                     onClick={() => copyCode(snippetId, block.value)}
-                    className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 transition hover:bg-zinc-800"
+                    className="min-h-10 shrink-0 touch-manipulation rounded-md border border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-200 transition active:bg-zinc-800 hover:bg-zinc-800 sm:min-h-9 sm:py-1.5"
                   >
                     {copiedSnippetId === snippetId ? "Copied" : "Copy"}
                   </button>
                 </div>
-                <pre className="overflow-x-auto px-4 py-3 text-[13px] leading-6 text-emerald-300">
+                <pre className="overflow-x-auto overscroll-x-contain px-3 py-3 text-[12px] leading-6 text-emerald-300 sm:px-4 sm:text-[13px]">
                   <code>{block.value}</code>
                 </pre>
               </div>
@@ -382,7 +413,7 @@ export default function Home() {
           }
 
           return (
-            <p key={snippetId} className="whitespace-pre-wrap">
+            <p key={snippetId} className="break-words whitespace-pre-wrap">
               {block.value}
             </p>
           );
@@ -395,10 +426,10 @@ export default function Home() {
     return conversations.map((chat) => (
       <div
         key={chat.id}
-        className={`group flex items-center justify-between rounded-xl border px-3 py-2 ${
+        className={`group flex min-h-12 items-center justify-between gap-2 rounded-xl border px-3 py-2 touch-manipulation ${
           chat.id === activeId
             ? "border-cyan-300 bg-cyan-400/10"
-            : "border-zinc-800 bg-zinc-900 hover:border-zinc-700"
+            : "border-zinc-800 bg-zinc-900 active:bg-zinc-800/80 hover:border-zinc-700"
         }`}
       >
         <button
@@ -409,14 +440,14 @@ export default function Home() {
               setIsMobileSidebarOpen(false);
             }
           }}
-          className="mr-2 flex-1 truncate text-left text-sm"
+          className="min-h-11 min-w-0 flex-1 truncate text-left text-sm"
         >
           {chat.title}
         </button>
         <button
           type="button"
           onClick={() => deleteConversation(chat.id)}
-          className="text-xs text-zinc-400 opacity-100 transition hover:text-red-400 lg:opacity-0 lg:group-hover:opacity-100"
+          className="min-h-10 min-w-[4.5rem] shrink-0 touch-manipulation rounded-lg px-2 text-xs text-zinc-400 transition active:text-red-400 hover:text-red-400 lg:min-h-0 lg:min-w-0 lg:opacity-0 lg:group-hover:opacity-100"
         >
           Delete
         </button>
@@ -425,30 +456,32 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
+    <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-zinc-950 text-zinc-100">
       {isMobileSidebarOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-[2px] lg:hidden"
           onClick={() => setIsMobileSidebarOpen(false)}
+          aria-hidden
         />
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-72 border-r border-zinc-800 bg-zinc-900/95 p-4 backdrop-blur transition-transform duration-200 lg:hidden ${
+        className={`fixed left-0 top-0 z-50 flex h-dvh max-h-dvh w-[min(100vw-2.5rem,18rem)] max-w-[85vw] flex-col border-r border-zinc-800 bg-zinc-900/98 p-4 pt-[max(1rem,env(safe-area-inset-top,0px))] pb-[max(1rem,env(safe-area-inset-bottom,0px))] shadow-2xl backdrop-blur-md transition-transform duration-200 ease-out will-change-transform lg:hidden ${
           isMobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="mb-4 flex items-center justify-between">
-          <div>
+        <div className="mb-4 flex shrink-0 items-center justify-between gap-2">
+          <div className="min-w-0">
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Assistant</p>
-            <h1 className="text-xl font-semibold">corby.ai</h1>
+            <h1 className="truncate text-xl font-semibold">corby.ai</h1>
           </div>
           <button
             type="button"
             onClick={() => setIsMobileSidebarOpen(false)}
-            className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300"
+            className="min-h-10 min-w-10 shrink-0 touch-manipulation rounded-lg border border-zinc-700 text-sm text-zinc-300 active:bg-zinc-800"
+            aria-label="Close conversations"
           >
-            Close
+            ✕
           </button>
         </div>
         <button
@@ -457,15 +490,17 @@ export default function Home() {
             createConversation();
             setIsMobileSidebarOpen(false);
           }}
-          className="mb-3 w-full rounded-xl bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950 transition hover:bg-cyan-300"
+          className="mb-3 min-h-11 w-full touch-manipulation rounded-xl bg-cyan-400 px-3 py-2.5 text-sm font-medium text-zinc-950 transition active:bg-cyan-300 hover:bg-cyan-300"
         >
           New conversation
         </button>
-        <div className="space-y-2 overflow-y-auto">{renderConversationsList(true)}</div>
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-y-contain [-webkit-overflow-scrolling:touch]">
+          {renderConversationsList(true)}
+        </div>
       </aside>
 
-      <div className="mx-auto flex h-screen max-w-7xl gap-4 p-2 sm:p-4">
-        <aside className="hidden w-72 shrink-0 rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4 backdrop-blur lg:flex lg:flex-col">
+      <div className="mx-auto flex min-h-0 flex-1 max-w-7xl gap-2 px-[max(0.5rem,env(safe-area-inset-left,0px))] py-2 pr-[max(0.5rem,env(safe-area-inset-right,0px))] pt-[max(0.25rem,env(safe-area-inset-top,0px))] pb-[max(0.25rem,env(safe-area-inset-bottom,0px))] sm:gap-4 sm:p-4 lg:flex-row">
+        <aside className="hidden min-h-0 w-72 shrink-0 flex-col rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4 backdrop-blur lg:flex">
           <div className="mb-4 flex items-center justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">
@@ -482,46 +517,71 @@ export default function Home() {
             </button>
           </div>
 
-          <div className="space-y-2 overflow-y-auto">{renderConversationsList()}</div>
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-y-contain">
+            {renderConversationsList()}
+          </div>
         </aside>
 
-        <main className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/80 backdrop-blur">
-          <div className="border-b border-zinc-800 px-4 py-4 sm:px-5">
-            <div className="mb-2 flex items-center justify-between lg:hidden">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/80 backdrop-blur sm:rounded-2xl">
+          <header className="shrink-0 border-b border-zinc-800 px-3 py-3 sm:px-5 sm:py-4">
+            <div className="mb-2 flex items-center gap-2 lg:hidden">
               <button
                 type="button"
                 onClick={() => setIsMobileSidebarOpen(true)}
-                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200"
+                className="min-h-11 min-w-11 shrink-0 touch-manipulation rounded-xl border border-zinc-700 px-3 text-sm text-zinc-200 active:bg-zinc-800"
+                aria-label="Open conversations"
               >
-                Conversations
+                ☰
               </button>
+              <div className="min-w-0 flex-1">
+                <h2 className="truncate text-base font-medium text-zinc-100">corby.ai</h2>
+              </div>
               <button
                 type="button"
                 onClick={createConversation}
-                className="rounded-lg bg-cyan-400 px-3 py-1.5 text-sm font-medium text-zinc-950"
+                className="min-h-11 shrink-0 touch-manipulation rounded-xl bg-cyan-400 px-4 text-sm font-medium text-zinc-950 active:bg-cyan-300"
               >
                 New
               </button>
             </div>
-            <h2 className="text-base font-medium text-zinc-100">Chat with corby.ai</h2>
-            <p className="text-sm text-zinc-400">
-              Powered by Karacode Labs — model corby
+            <h2 className="hidden text-base font-medium text-zinc-100 lg:block">Chat with corby.ai</h2>
+            <p className="mt-0.5 text-xs leading-snug text-zinc-400 sm:text-sm">
+              Karacode Labs · <span className="text-zinc-300">{selectedModelLabel}</span>
             </p>
-          </div>
+            <label htmlFor="model-select" className="mt-3 block text-xs font-medium text-zinc-500">
+              Model
+            </label>
+            <select
+              id="model-select"
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              disabled={isLoading}
+              className="mt-1.5 h-11 w-full min-h-11 touch-manipulation rounded-xl border border-zinc-700 bg-zinc-950 px-3 text-base text-zinc-100 outline-none ring-cyan-300 focus:ring-2 disabled:opacity-50 sm:h-10 sm:max-w-xs sm:min-h-10 sm:text-sm"
+            >
+              {CHAT_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </header>
 
-          <div className="flex-1 space-y-4 overflow-y-auto p-3 sm:p-5">
+          <div
+            ref={messagesScrollRef}
+            className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain p-3 [-webkit-overflow-scrolling:touch] sm:space-y-4 sm:p-5"
+          >
             {!activeConversation || activeConversation.messages.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-zinc-700 p-6 text-sm text-zinc-400">
-                Start a conversation and corby.ai will remember it.
+              <div className="rounded-2xl border border-dashed border-zinc-700 p-5 text-sm leading-relaxed text-zinc-400 sm:p-6">
+                Start a conversation — corby.ai will remember it in this browser.
               </div>
             ) : (
               activeConversation.messages.map((message) => (
                 <div
                   key={message.id}
-                  className={`max-w-3xl rounded-2xl px-4 py-3 text-sm leading-6 ${
+                  className={`max-w-[min(100%,42rem)] break-words rounded-2xl px-3.5 py-3 text-sm leading-relaxed sm:px-4 ${
                     message.role === "user"
-                      ? "ml-auto bg-cyan-400 text-zinc-950"
-                      : "bg-zinc-800 text-zinc-100"
+                      ? "ml-auto w-fit max-w-[min(92%,36rem)] bg-cyan-400 text-zinc-950"
+                      : "mr-auto w-full max-w-[min(100%,42rem)] bg-zinc-800 text-zinc-100"
                   }`}
                 >
                   <p className="mb-1 text-xs uppercase tracking-wider opacity-70">
@@ -533,7 +593,7 @@ export default function Home() {
             )}
 
             {isLoading && (
-              <div className="max-w-3xl rounded-2xl bg-zinc-800 px-4 py-3 text-sm text-zinc-300">
+              <div className="mr-auto max-w-[min(100%,42rem)] rounded-2xl bg-zinc-800 px-3.5 py-3 text-sm text-zinc-300 sm:px-4">
                 <p className="mb-1 text-xs uppercase tracking-wider opacity-70">corby.ai</p>
                 {streamingReply ? (
                   renderMessageContent(streamingReply, "streaming")
@@ -546,10 +606,42 @@ export default function Home() {
             )}
           </div>
 
-          <form onSubmit={sendMessage} className="border-t border-zinc-800 p-3 sm:p-4">
-            {error && <p className="mb-2 text-sm text-red-400">{error}</p>}
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs text-zinc-500">
+          <form
+            onSubmit={sendMessage}
+            className="shrink-0 border-t border-zinc-800 bg-zinc-900/90 p-3 sm:bg-transparent sm:p-4"
+          >
+            {error && (
+              <p className="mb-2 rounded-lg bg-red-950/40 px-3 py-2 text-sm text-red-300" role="alert">
+                {error}
+              </p>
+            )}
+            <details className="mb-3 rounded-xl border border-zinc-800 bg-zinc-950/50 sm:hidden">
+              <summary className="cursor-pointer list-none px-3 py-2.5 text-sm font-medium text-zinc-400 [&::-webkit-details-marker]:hidden">
+                <span className="flex items-center justify-between gap-2">
+                  Advanced · thinking
+                  <span className="text-xs text-zinc-500">{thinkEnabled ? "On" : "Off"}</span>
+                </span>
+              </summary>
+              <div className="border-t border-zinc-800 px-3 py-3">
+                <p className="mb-3 text-xs leading-relaxed text-zinc-500">
+                  Slower on some models. Only enable if your model supports <code className="text-zinc-400">think</code>.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setThinkEnabled((v) => !v)}
+                  aria-pressed={thinkEnabled}
+                  className={`min-h-11 w-full touch-manipulation rounded-xl border px-4 text-sm font-medium transition active:opacity-90 ${
+                    thinkEnabled
+                      ? "border-cyan-400 bg-cyan-400/15 text-cyan-200"
+                      : "border-zinc-600 bg-zinc-900 text-zinc-300"
+                  }`}
+                >
+                  Thinking: {thinkEnabled ? "On" : "Off"}
+                </button>
+              </div>
+            </details>
+            <div className="mb-3 hidden flex-wrap items-center justify-between gap-3 sm:flex">
+              <span className="max-w-xl text-xs text-zinc-500">
                 Extended thinking is <strong className="text-zinc-400">off</strong> by default (faster). Turn on only for
                 models that support <code className="text-zinc-400">think</code>.
               </span>
@@ -557,7 +649,7 @@ export default function Home() {
                 type="button"
                 onClick={() => setThinkEnabled((v) => !v)}
                 aria-pressed={thinkEnabled}
-                className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                className={`min-h-9 shrink-0 rounded-full border px-4 py-2 text-xs font-medium transition ${
                   thinkEnabled
                     ? "border-cyan-400 bg-cyan-400/15 text-cyan-200"
                     : "border-zinc-600 bg-zinc-900 text-zinc-400 hover:border-zinc-500"
@@ -566,25 +658,26 @@ export default function Home() {
                 Thinking: {thinkEnabled ? "On" : "Off"}
               </button>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
               <input
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
-                placeholder="Ask corby.ai anything..."
-                className="flex-1 rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm outline-none ring-cyan-300 placeholder:text-zinc-500 focus:ring-2"
+                placeholder="Message corby.ai…"
+                enterKeyHint="send"
+                className="min-h-11 w-full flex-1 touch-manipulation rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-base outline-none ring-cyan-300 placeholder:text-zinc-500 focus:ring-2 sm:min-h-10 sm:text-sm"
               />
               {isLoading ? (
                 <button
                   type="button"
                   onClick={stopGeneration}
-                  className="shrink-0 rounded-xl border border-red-400/60 bg-red-950/50 px-4 py-3 text-sm font-semibold text-red-200 transition hover:bg-red-900/50 sm:px-5"
+                  className="min-h-11 w-full touch-manipulation rounded-xl border border-red-400/60 bg-red-950/50 px-4 text-sm font-semibold text-red-200 transition active:bg-red-900/60 sm:min-w-[5.5rem] sm:w-auto"
                 >
                   Stop
                 </button>
               ) : (
                 <button
                   type="submit"
-                  className="rounded-xl bg-cyan-400 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300 sm:px-5"
+                  className="min-h-11 w-full touch-manipulation rounded-xl bg-cyan-400 px-4 text-sm font-semibold text-zinc-950 transition active:bg-cyan-300 sm:min-w-[5.5rem] sm:w-auto"
                 >
                   Send
                 </button>
