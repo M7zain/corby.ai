@@ -1,6 +1,5 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { ADMIN_COOKIE, verifyAdminSessionCookie } from "@/lib/admin-auth";
+import { auth } from "@/auth";
 import {
   countImagesInStoredJson,
   parseStoredImagesJsonToDataUrls,
@@ -9,18 +8,12 @@ import {
 } from "@/lib/chat-log";
 
 export async function GET() {
-  const password = process.env.ADMIN_PASSWORD;
-  if (!password) {
-    return NextResponse.json(
-      { error: "ADMIN_PASSWORD is not set on the server." },
-      { status: 503 },
-    );
-  }
-
-  const cookieStore = await cookies();
-  const session = cookieStore.get(ADMIN_COOKIE)?.value;
-  if (!verifyAdminSessionCookie(session, password)) {
+  const session = await auth();
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (session.user.role !== "admin") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const events = await readAllQuestionEvents();
@@ -31,6 +24,8 @@ export async function GET() {
     .map((e) => ({
       at: e.at,
       clientId: e.clientId,
+      userEmail: e.userEmail,
+      userName: e.userName,
       model: e.model,
       preview: e.question.length > 160 ? `${e.question.slice(0, 160)}…` : e.question,
       hasImage: e.hasImage,

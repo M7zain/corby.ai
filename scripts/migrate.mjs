@@ -42,7 +42,37 @@ try {
       throw e;
     }
   }
-  console.log("Migration OK: question_events table ready.");
+  try {
+    await conn.query(
+      "ALTER TABLE question_events ADD COLUMN user_email VARCHAR(255) NULL",
+    );
+    console.log("Added column user_email.");
+  } catch (e) {
+    if (e?.code !== "ER_DUP_FIELDNAME") {
+      throw e;
+    }
+  }
+  try {
+    await conn.query(
+      "ALTER TABLE question_events ADD COLUMN user_name VARCHAR(191) NULL",
+    );
+    console.log("Added column user_name.");
+  } catch (e) {
+    if (e?.code !== "ER_DUP_FIELDNAME") {
+      throw e;
+    }
+  }
+  try {
+    await conn.query(
+      "CREATE INDEX idx_question_events_user_email ON question_events (user_email)",
+    );
+    console.log("Added index idx_question_events_user_email.");
+  } catch (e) {
+    if (e?.code !== "ER_DUP_KEYNAME") {
+      throw e;
+    }
+  }
+  console.log("Migration OK: question_events + users ready.");
 } finally {
   await conn.end();
 }

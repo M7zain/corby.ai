@@ -1,6 +1,9 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { type ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { signOut, useSession } from "next-auth/react";
 import { CHAT_MODELS, VISION_MODEL_ID } from "@/lib/chat-models";
 
 type Role = "user" | "assistant";
@@ -26,8 +29,6 @@ const STORAGE_KEY = "corby-ai-conversations";
 /** Opt-in only; older key `corby-ai-think-enabled` is cleared on load so thinking stays off by default. */
 const THINK_OPT_IN_KEY = "corby-ai-think-opt-in";
 const SELECTED_MODEL_KEY = "corby-ai-selected-model";
-/** Sent with each chat request so the admin dashboard can group questions by browser. */
-const CLIENT_ID_KEY = "corby-client-id";
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 /** Downscale camera shots so the UI stays responsive and payloads stay reasonable. */
 const IMAGE_MAX_EDGE_PX = 1792;
@@ -35,18 +36,6 @@ const JPEG_QUALITY = 0.82;
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function getOrCreateClientId(): string {
-  if (typeof window === "undefined") {
-    return "anonymous";
-  }
-  let id = window.localStorage.getItem(CLIENT_ID_KEY);
-  if (!id) {
-    id = uid();
-    window.localStorage.setItem(CLIENT_ID_KEY, id);
-  }
-  return id;
 }
 
 function shortTitleFromMessage(message: string) {
@@ -197,6 +186,9 @@ function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 export default function Home() {
+  const pathname = usePathname();
+  const { data: session, status: sessionStatus } = useSession();
+  const [authModalOpen, setAuthModalOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -387,6 +379,14 @@ export default function Home() {
       return;
     }
 
+    if (sessionStatus === "loading") {
+      return;
+    }
+    if (sessionStatus !== "authenticated") {
+      setAuthModalOpen(true);
+      return;
+    }
+
     const userContent = text || "What do you see in this image? Describe it clearly.";
     const imageUrls =
       selectedModel === VISION_MODEL_ID && pendingImageDataUrl
@@ -410,6 +410,8 @@ export default function Home() {
         : activeConversation.title;
 
     const chatId = activeConversation.id;
+    const messagesBeforeSend = activeConversation.messages;
+    const titleBeforeSend = activeConversation.title;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -440,11 +442,11 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         signal: controller.signal,
+        credentials: "include",
         body: JSON.stringify({
           messages: toApiMessages(updatedMessages, selectedModel),
           think: thinkEnabled,
           model: selectedModel,
-          clientId: getOrCreateClientId(),
         }),
       });
 
@@ -452,6 +454,21 @@ export default function Home() {
         const body = (await response.json().catch(() => null)) as
           | { error?: string }
           | null;
+        if (response.status === 401) {
+          setAuthModalOpen(true);
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === chatId
+                ? { ...c, messages: messagesBeforeSend, title: titleBeforeSend, updatedAt: new Date().toISOString() }
+                : c,
+            ),
+          );
+          setInput(userContent);
+          if (imageUrls?.[0]) {
+            setPendingImageDataUrl(imageUrls[0]);
+          }
+          throw new Error(body?.error || "Sign in to send messages.");
+        }
         throw new Error(body?.error || "Failed to reach corby.ai");
       }
 
@@ -547,6 +564,10 @@ export default function Home() {
   const selectedModelLabel =
     CHAT_MODELS.find((m) => m.id === selectedModel)?.label ?? selectedModel;
 
+  const authReturnParam = encodeURIComponent(pathname || "/");
+  const loginWithReturnHref = `/login?callbackUrl=${authReturnParam}`;
+  const registerWithReturnHref = `/register?callbackUrl=${authReturnParam}`;
+
   async function copyCode(snippetId: string, value: string) {
     try {
       await navigator.clipboard.writeText(value);
@@ -635,6 +656,53 @@ export default function Home() {
 
   return (
     <div className="flex h-dvh max-h-dvh min-w-0 max-w-[100vw] flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+      {authModalOpen && (
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-[2px]"
+            aria-label="Close"
+            onClick={() => setAuthModalOpen(false)}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="auth-modal-title"
+            className="fixed left-1/2 top-1/2 z-[90] w-[min(calc(100vw-2rem),22rem)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"
+          >
+            <h2 id="auth-modal-title" className="text-lg font-semibold text-zinc-100">
+              Sign in to chat
+            </h2>
+            <p className="mt-2 text-sm text-zinc-400">
+              Create an account or sign in to send messages. You can still browse the UI as a guest.
+            </p>
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setAuthModalOpen(false)}
+                className="order-3 min-h-11 rounded-xl border border-zinc-600 px-4 py-2.5 text-sm text-zinc-300 sm:order-1"
+              >
+                Cancel
+              </button>
+              <Link
+                href={registerWithReturnHref}
+                className="order-1 min-h-11 rounded-xl border border-zinc-600 px-4 py-2.5 text-center text-sm font-medium text-zinc-200 sm:order-2"
+                onClick={() => setAuthModalOpen(false)}
+              >
+                Register
+              </Link>
+              <Link
+                href={loginWithReturnHref}
+                className="order-2 min-h-11 rounded-xl bg-cyan-400 px-4 py-2.5 text-center text-sm font-semibold text-zinc-950 sm:order-3"
+                onClick={() => setAuthModalOpen(false)}
+              >
+                Sign in
+              </Link>
+            </div>
+          </div>
+        </>
+      )}
+
       {isMobileSidebarOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/60 backdrop-blur-[2px] lg:hidden"
@@ -712,6 +780,52 @@ export default function Home() {
                 <span>Thinking mode</span>
                 <span className="text-xs opacity-80">{thinkEnabled ? "On" : "Off"}</span>
               </button>
+              <div className="mt-6 border-t border-zinc-800 pt-4">
+                <p className="text-xs font-medium text-zinc-400">Account</p>
+                {sessionStatus === "authenticated" && session?.user?.email ? (
+                  <>
+                    <p className="mt-1 truncate text-sm text-zinc-500">{session.user.email}</p>
+                    <div className="mt-3 flex flex-col gap-2">
+                      {session.user.role === "admin" && (
+                        <Link
+                          href="/admin"
+                          className="min-h-11 touch-manipulation rounded-xl border border-zinc-700 py-3 text-center text-sm text-cyan-300"
+                          onClick={() => setMobileOptionsOpen(false)}
+                        >
+                          Admin
+                        </Link>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMobileOptionsOpen(false);
+                          void signOut({ callbackUrl: "/login" });
+                        }}
+                        className="min-h-11 w-full touch-manipulation rounded-xl border border-zinc-600 py-3 text-sm text-zinc-300"
+                      >
+                        Sign out
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-3 flex flex-col gap-2">
+                    <Link
+                      href={loginWithReturnHref}
+                      className="min-h-11 touch-manipulation rounded-xl bg-cyan-400 py-3 text-center text-sm font-semibold text-zinc-950"
+                      onClick={() => setMobileOptionsOpen(false)}
+                    >
+                      Sign in
+                    </Link>
+                    <Link
+                      href={registerWithReturnHref}
+                      className="min-h-11 touch-manipulation rounded-xl border border-zinc-600 py-3 text-center text-sm text-zinc-200"
+                      onClick={() => setMobileOptionsOpen(false)}
+                    >
+                      Register
+                    </Link>
+                  </div>
+                )}
+              </div>
               <p className="mt-6 text-center text-[11px] text-zinc-600">Karacode Labs</p>
               <button
                 type="button"
@@ -814,10 +928,50 @@ export default function Home() {
             </div>
 
             <div className="hidden lg:block">
-              <h2 className="text-base font-medium text-zinc-100">Chat with corby.ai</h2>
-              <p className="mt-0.5 text-sm text-zinc-400">
-                Karacode Labs · <span className="text-zinc-300">{selectedModelLabel}</span>
-              </p>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h2 className="text-base font-medium text-zinc-100">Chat with corby.ai</h2>
+                  <p className="mt-0.5 text-sm text-zinc-400">
+                    Karacode Labs · <span className="text-zinc-300">{selectedModelLabel}</span>
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 text-xs text-zinc-500">
+                  {sessionStatus === "authenticated" && session?.user?.email ? (
+                    <>
+                      <span className="max-w-[14rem] truncate" title={session.user.email}>
+                        {session.user.email}
+                      </span>
+                      {session.user.role === "admin" && (
+                        <Link href="/admin" className="text-cyan-300 hover:underline">
+                          Admin
+                        </Link>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void signOut({ callbackUrl: "/login" })}
+                        className="rounded-lg border border-zinc-600 px-2 py-1 text-zinc-300 transition hover:border-zinc-500"
+                      >
+                        Sign out
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <Link
+                        href={loginWithReturnHref}
+                        className="rounded-lg border border-zinc-600 px-2 py-1 text-zinc-200 transition hover:border-zinc-500"
+                      >
+                        Sign in
+                      </Link>
+                      <Link
+                        href={registerWithReturnHref}
+                        className="rounded-lg border border-cyan-500/40 bg-cyan-400/10 px-2 py-1 text-cyan-200 transition hover:border-cyan-400/60"
+                      >
+                        Register
+                      </Link>
+                    </>
+                  )}
+                </div>
+              </div>
               <label htmlFor="model-select" className="mt-3 block text-xs font-medium text-zinc-500">
                 Model
               </label>
@@ -848,9 +1002,15 @@ export default function Home() {
           >
             {!activeConversation || activeConversation.messages.length === 0 ? (
               <div className="rounded-xl border border-dashed border-zinc-700/80 p-4 text-center text-sm text-zinc-500 sm:rounded-2xl sm:p-6 sm:text-left sm:text-base">
-                <span className="lg:hidden">Message below to start. Chats save in this browser.</span>
+                <span className="lg:hidden">
+                  {session?.user
+                    ? "Message below to start. Chats save in this browser."
+                    : "Sign in to send messages. Chats still save in this browser."}
+                </span>
                 <span className="hidden lg:inline">
-                  Start a conversation — corby.ai will remember it in this browser.
+                  {session?.user
+                    ? "Start a conversation — corby.ai will remember it in this browser."
+                    : "Sign in to send messages. You can still open chats here; they stay in this browser."}
                 </span>
               </div>
             ) : (

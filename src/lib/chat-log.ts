@@ -6,6 +6,9 @@ import { getMysqlPool } from "@/lib/db";
 export type QuestionLogEvent = {
   at: string;
   clientId: string;
+  /** Denormalized at log time for admin “who did what”. */
+  userEmail: string | null;
+  userName: string | null;
   model: string;
   question: string;
   hasImage: boolean;
@@ -15,11 +18,32 @@ export type QuestionLogEvent = {
 
 interface QuestionRow extends RowDataPacket {
   client_id: string;
+  user_email: string | null;
+  user_name: string | null;
   model: string;
   question: string;
   has_image: number;
   images_base64_json: string | null;
   created_at: Date | string;
+}
+
+/** Before migration adds user_email / user_name */
+interface QuestionRowLegacy extends RowDataPacket {
+  client_id: string;
+  model: string;
+  question: string;
+  has_image: number;
+  images_base64_json: string | null;
+  created_at: Date | string;
+}
+
+function isMysqlUnknownColumnError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code: string }).code === "ER_BAD_FIELD_ERROR"
+  );
 }
 
 const dataDir = path.join(process.cwd(), "data");
@@ -133,6 +157,8 @@ function rowToEvent(r: QuestionRow): QuestionLogEvent {
   return {
     at,
     clientId: r.client_id,
+    userEmail: r.user_email ?? null,
+    userName: r.user_name ?? null,
     model: r.model,
     question: r.question,
     hasImage: Boolean(r.has_image),
@@ -142,20 +168,32 @@ function rowToEvent(r: QuestionRow): QuestionLogEvent {
 
 export async function logUserQuestion(entry: {
   clientId: string;
+  userEmail?: string | null;
+  userName?: string | null;
   model: string;
   question: string;
   hasImage: boolean;
   imagesBase64?: string[] | null;
 }): Promise<void> {
   const imagesJson = serializeImagesBase64Json(entry.imagesBase64 ?? null);
+  const email =
+    typeof entry.userEmail === "string" && entry.userEmail.trim()
+      ? entry.userEmail.trim().toLowerCase().slice(0, 255)
+      : null;
+  const name =
+    typeof entry.userName === "string" && entry.userName.trim()
+      ? entry.userName.trim().slice(0, 191)
+      : null;
 
   const pool = getMysqlPool();
   if (pool) {
     try {
       await pool.execute(
-        `INSERT INTO question_events (client_id, model, question, has_image, images_base64_json) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO question_events (client_id, user_email, user_name, model, question, has_image, images_base64_json) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           entry.clientId.slice(0, 128),
+          email,
+          name,
           entry.model.slice(0, 64),
           entry.question.slice(0, 8000),
           entry.hasImage ? 1 : 0,
@@ -163,7 +201,24 @@ export async function logUserQuestion(entry: {
         ],
       );
     } catch (err) {
-      console.error("[chat-log] MySQL write failed:", err);
+      if (isMysqlUnknownColumnError(err)) {
+        try {
+          await pool.execute(
+            `INSERT INTO question_events (client_id, model, question, has_image, images_base64_json) VALUES (?, ?, ?, ?, ?)`,
+            [
+              entry.clientId.slice(0, 128),
+              entry.model.slice(0, 64),
+              entry.question.slice(0, 8000),
+              entry.hasImage ? 1 : 0,
+              imagesJson,
+            ],
+          );
+        } catch (err2) {
+          console.error("[chat-log] MySQL write failed:", err2);
+        }
+      } else {
+        console.error("[chat-log] MySQL write failed:", err);
+      }
     }
     return;
   }
@@ -173,6 +228,8 @@ export async function logUserQuestion(entry: {
     const line: QuestionLogEvent = {
       at: new Date().toISOString(),
       clientId: entry.clientId.slice(0, 128),
+      userEmail: email,
+      userName: name,
       model: entry.model.slice(0, 64),
       question: entry.question.slice(0, 8000),
       hasImage: entry.hasImage,
@@ -189,12 +246,31 @@ export async function readAllQuestionEvents(): Promise<QuestionLogEvent[]> {
   if (pool) {
     try {
       const [rows] = await pool.execute<QuestionRow[]>(
-        `SELECT client_id, model, question, has_image, images_base64_json, created_at
+        `SELECT client_id, user_email, user_name, model, question, has_image, images_base64_json, created_at
          FROM question_events
          ORDER BY created_at ASC`,
       );
       return rows.map(rowToEvent);
     } catch (err) {
+      if (isMysqlUnknownColumnError(err)) {
+        try {
+          const [legacy] = await pool.execute<QuestionRowLegacy[]>(
+            `SELECT client_id, model, question, has_image, images_base64_json, created_at
+             FROM question_events
+             ORDER BY created_at ASC`,
+          );
+          return legacy.map((r) =>
+            rowToEvent({
+              ...r,
+              user_email: null,
+              user_name: null,
+            } as QuestionRow),
+          );
+        } catch (err2) {
+          console.error("[chat-log] MySQL read failed:", err2);
+          return [];
+        }
+      }
       console.error("[chat-log] MySQL read failed:", err);
       return [];
     }
@@ -206,7 +282,14 @@ export async function readAllQuestionEvents(): Promise<QuestionLogEvent[]> {
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as QuestionLogEvent);
+      .map((line) => {
+        const e = JSON.parse(line) as QuestionLogEvent & { userEmail?: unknown; userName?: unknown };
+        return {
+          ...e,
+          userEmail: typeof e.userEmail === "string" ? e.userEmail : null,
+          userName: typeof e.userName === "string" ? e.userName : null,
+        };
+      });
   } catch {
     return [];
   }
@@ -214,6 +297,8 @@ export async function readAllQuestionEvents(): Promise<QuestionLogEvent[]> {
 
 export type ClientSummary = {
   clientId: string;
+  userEmail: string | null;
+  userName: string | null;
   questionCount: number;
   lastAt: string;
   lastQuestionPreview: string;
@@ -223,7 +308,14 @@ export type ClientSummary = {
 export function summarizeByClient(events: QuestionLogEvent[]): ClientSummary[] {
   const map = new Map<
     string,
-    { questionCount: number; lastAt: string; lastQuestion: string; lastModel: string }
+    {
+      questionCount: number;
+      lastAt: string;
+      lastQuestion: string;
+      lastModel: string;
+      lastEmail: string | null;
+      lastName: string | null;
+    }
   >();
 
   for (const e of events) {
@@ -234,6 +326,8 @@ export function summarizeByClient(events: QuestionLogEvent[]): ClientSummary[] {
         lastAt: e.at,
         lastQuestion: e.question,
         lastModel: e.model,
+        lastEmail: e.userEmail,
+        lastName: e.userName,
       });
       continue;
     }
@@ -242,12 +336,16 @@ export function summarizeByClient(events: QuestionLogEvent[]): ClientSummary[] {
       prev.lastAt = e.at;
       prev.lastQuestion = e.question;
       prev.lastModel = e.model;
+      prev.lastEmail = e.userEmail;
+      prev.lastName = e.userName;
     }
   }
 
   return [...map.entries()]
     .map(([clientId, v]) => ({
       clientId,
+      userEmail: v.lastEmail,
+      userName: v.lastName,
       questionCount: v.questionCount,
       lastAt: v.lastAt,
       lastQuestionPreview: v.lastQuestion.length > 120 ? `${v.lastQuestion.slice(0, 120)}…` : v.lastQuestion,

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/auth";
 import { ALLOWED_CHAT_MODEL_IDS } from "@/lib/chat-models";
 import { logUserQuestion } from "@/lib/chat-log";
 
@@ -18,8 +19,6 @@ type ChatRequest = {
   think?: boolean;
   /** Must be in ALLOWED_CHAT_MODEL_IDS; otherwise server falls back to OLLAMA_MODEL. */
   model?: string;
-  /** Anonymous browser id for admin analytics (localStorage). */
-  clientId?: string;
 };
 
 type OllamaStreamChunk = {
@@ -82,6 +81,29 @@ function maybeEnqueuePlainTextTail(
 
 export async function POST(request: Request) {
   try {
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Sign in to chat." }, { status: 401 });
+    }
+    const userClientId = session.user.id.slice(0, 128);
+
+    let logEmail =
+      typeof session.user.email === "string" && session.user.email.trim()
+        ? session.user.email.trim().toLowerCase()
+        : null;
+    let logName: string | null =
+      typeof session.user.name === "string" && session.user.name.trim()
+        ? session.user.name.trim()
+        : null;
+    if (!logEmail && session.user.id) {
+      const { getUserById } = await import("@/lib/users");
+      const row = await getUserById(session.user.id);
+      if (row) {
+        logEmail = row.email.trim().toLowerCase();
+        logName = logName ?? row.name;
+      }
+    }
+
     const body = (await request.json()) as ChatRequest;
     const messages = body.messages || [];
     const think = body.think === true;
@@ -97,16 +119,13 @@ export async function POST(request: Request) {
       );
     }
 
-    const clientId =
-      typeof body.clientId === "string" && body.clientId.trim().length > 0
-        ? body.clientId.trim().slice(0, 128)
-        : "anonymous";
-
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (lastUser?.content?.trim()) {
       const imgs = lastUser.images?.filter((s) => typeof s === "string" && s.length > 0) ?? [];
       void logUserQuestion({
-        clientId,
+        clientId: userClientId,
+        userEmail: logEmail,
+        userName: logName,
         model: requestedModel,
         question: lastUser.content.trim(),
         hasImage: imgs.length > 0,
