@@ -1,5 +1,5 @@
-/** Ollama tag for the vision-capable model (UI label: corby 2.0). */
-export const VISION_MODEL_ID = "gemma4:latest";
+/** Ollama tag for the vision-capable model (UI label: corby 2.0). Experiment: corby-gemma4:latest */
+export const VISION_MODEL_ID = "corby-gemma4:latest";
 
 export const CHAT_MODELS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "corby:latest", label: "Corby" },

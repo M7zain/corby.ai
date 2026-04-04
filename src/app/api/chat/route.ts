@@ -148,8 +148,14 @@ export async function POST(request: Request) {
 
     if (!upstream.ok) {
       const text = await upstream.text();
+      const looksLikeOurAuth =
+        upstream.status === 401 &&
+        (text.includes("Sign in to chat") || text.includes('"error":"Sign in to chat"'));
+      const hint = looksLikeOurAuth
+        ? ` Your OLLAMA_BASE_URL (${OLLAMA_BASE_URL}) is probably pointing at this Next.js app instead of Ollama. Use Ollama’s URL (e.g. http://127.0.0.1:11434). Server-side fetch does not send the browser session cookie.`
+        : "";
       return NextResponse.json(
-        { error: `Ollama request failed: ${text || upstream.statusText}` },
+        { error: `Ollama request failed: ${text || upstream.statusText}.${hint}` },
         { status: 502 },
       );
     }
