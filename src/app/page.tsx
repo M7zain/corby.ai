@@ -190,6 +190,7 @@ export default function Home() {
   const [isCompressingPhoto, setIsCompressingPhoto] = useState(false);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
   const [remoteReady, setRemoteReady] = useState(false);
+  const [cloudSyncWarning, setCloudSyncWarning] = useState<string | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
 
   useEffect(() => {
@@ -227,6 +228,18 @@ export default function Home() {
       setPendingImageDataUrl(null);
     }
   }, [selectedModel]);
+
+  /** New chat list for signed-in users only — never from device storage. */
+  function createFreshStarter(): Conversation[] {
+    const starter: Conversation = {
+      id: uid(),
+      title: "New chat",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messages: [],
+    };
+    return [starter];
+  }
 
   function loadConversationsFromLocalStorage(): Conversation[] {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -287,12 +300,19 @@ export default function Home() {
         }
 
         if (res.status === 503 || res.status === 401 || !res.ok) {
-          const next = loadConversationsFromLocalStorage();
+          const next = createFreshStarter();
           setConversations(next);
-          setActiveId(next[0]?.id ?? null);
+          setActiveId(next[0].id);
           setRemoteReady(false);
+          setCloudSyncWarning(
+            res.status === 503
+              ? "Database is not configured — chats won’t sync to your account."
+              : "Could not load your saved chats from the server. You can still chat here; changes may not save.",
+          );
           return;
         }
+
+        setCloudSyncWarning(null);
 
         const list = data.conversations ?? [];
         if (list.length > 0) {
@@ -302,24 +322,30 @@ export default function Home() {
           return;
         }
 
-        const next = loadConversationsFromLocalStorage();
+        const next = createFreshStarter();
         setConversations(next);
         setActiveId(next[0].id);
-        await fetch("/api/conversations", {
+        const putRes = await fetch("/api/conversations", {
           method: "PUT",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ conversations: next }),
         });
         if (!cancelled) {
-          setRemoteReady(true);
+          if (putRes.ok) {
+            setRemoteReady(true);
+          } else {
+            setRemoteReady(false);
+            setCloudSyncWarning("Could not save your new chat to the server.");
+          }
         }
       } catch {
         if (!cancelled) {
-          const next = loadConversationsFromLocalStorage();
+          const next = createFreshStarter();
           setConversations(next);
-          setActiveId(next[0]?.id ?? null);
+          setActiveId(next[0].id);
           setRemoteReady(false);
+          setCloudSyncWarning("Could not load your saved chats from the server.");
         }
       }
     })();
@@ -1133,6 +1159,15 @@ export default function Home() {
             </div>
           </header>
 
+          {sessionStatus === "authenticated" && cloudSyncWarning && (
+            <div
+              className="shrink-0 border-b border-amber-500/25 bg-amber-950/35 px-3 py-2 text-center text-xs text-amber-100/90 sm:px-5"
+              role="status"
+            >
+              {cloudSyncWarning}
+            </div>
+          )}
+
           <div
             ref={messagesScrollRef}
             className="min-h-0 min-w-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto overscroll-y-contain px-2 py-3 [-webkit-overflow-scrolling:touch] sm:space-y-4 sm:p-5"
@@ -1141,13 +1176,13 @@ export default function Home() {
               <div className="rounded-xl border border-dashed border-zinc-700/80 p-4 text-center text-sm text-zinc-500 sm:rounded-2xl sm:p-6 sm:text-left sm:text-base">
                 <span className="lg:hidden">
                   {session?.user
-                    ? "Message below to start. Chats save in this browser."
-                    : "Sign in to send messages. Chats still save in this browser."}
+                    ? "Message below to start. Signed-in chats are saved to your account."
+                    : "Sign in to send messages. Chats still save on this device."}
                 </span>
                 <span className="hidden lg:inline">
                   {session?.user
-                    ? "Start a conversation — corby.ai will remember it in this browser."
-                    : "Sign in to send messages. You can still open chats here; they stay in this browser."}
+                    ? "Start a conversation — signed-in chats sync to your account."
+                    : "Sign in to send messages. Guest chats stay on this device."}
                 </span>
               </div>
             ) : (
