@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ALLOWED_CHAT_MODEL_IDS } from "@/lib/chat-models";
+import { logUserQuestion } from "@/lib/chat-log";
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "corby:latest";
@@ -17,6 +18,8 @@ type ChatRequest = {
   think?: boolean;
   /** Must be in ALLOWED_CHAT_MODEL_IDS; otherwise server falls back to OLLAMA_MODEL. */
   model?: string;
+  /** Anonymous browser id for admin analytics (localStorage). */
+  clientId?: string;
 };
 
 type OllamaStreamChunk = {
@@ -24,6 +27,58 @@ type OllamaStreamChunk = {
   done?: boolean;
   error?: string;
 };
+
+function normalizeStreamLine(line: string): string {
+  let s = line.trim();
+  if (!s) {
+    return "";
+  }
+  if (s.startsWith("data:")) {
+    s = s.slice(5).trim();
+  }
+  return s;
+}
+
+function tryParseOllamaChunk(line: string): OllamaStreamChunk | null {
+  const s = normalizeStreamLine(line);
+  if (!s) {
+    return null;
+  }
+  try {
+    return JSON.parse(s) as OllamaStreamChunk;
+  } catch {
+    return null;
+  }
+}
+
+function enqueueTokens(
+  parsed: OllamaStreamChunk,
+  encoder: TextEncoder,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+) {
+  if (parsed.error) {
+    throw new Error(parsed.error);
+  }
+  const thinking = parsed.message?.thinking || "";
+  const token = parsed.message?.content || "";
+  const out = `${thinking}${token}`;
+  if (out) {
+    controller.enqueue(encoder.encode(out));
+  }
+}
+
+/** When JSON.parse fails: forward plain-text tails (some proxies/models append non-JSON). */
+function maybeEnqueuePlainTextTail(
+  raw: string,
+  encoder: TextEncoder,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+) {
+  const t = raw.trim();
+  if (!t || t.startsWith("{") || t.startsWith("[")) {
+    return;
+  }
+  controller.enqueue(encoder.encode(t));
+}
 
 export async function POST(request: Request) {
   try {
@@ -40,6 +95,21 @@ export async function POST(request: Request) {
         { error: "Please provide at least one message." },
         { status: 400 },
       );
+    }
+
+    const clientId =
+      typeof body.clientId === "string" && body.clientId.trim().length > 0
+        ? body.clientId.trim().slice(0, 128)
+        : "anonymous";
+
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    if (lastUser?.content?.trim()) {
+      void logUserQuestion({
+        clientId,
+        model: requestedModel,
+        question: lastUser.content.trim(),
+        hasImage: Boolean(lastUser.images && lastUser.images.length > 0),
+      });
     }
 
     const upstream = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
@@ -82,36 +152,24 @@ export async function POST(request: Request) {
             }
 
             buffer += decoder.decode(value, { stream: true });
-            const parts = buffer.split("\n");
+            const parts = buffer.split(/\r?\n/);
             buffer = parts.pop() || "";
 
             for (const line of parts) {
-              const chunk = line.trim();
-              if (!chunk) {
-                continue;
-              }
-
-              const parsed = JSON.parse(chunk) as OllamaStreamChunk;
-              if (parsed.error) {
-                throw new Error(parsed.error);
-              }
-
-              const thinking = parsed.message?.thinking || "";
-              const token = parsed.message?.content || "";
-              const out = `${thinking}${token}`;
-              if (out) {
-                controller.enqueue(encoder.encode(out));
+              const parsed = tryParseOllamaChunk(line);
+              if (parsed) {
+                enqueueTokens(parsed, encoder, controller);
               }
             }
           }
 
-          if (buffer.trim()) {
-            const parsed = JSON.parse(buffer.trim()) as OllamaStreamChunk;
-            const thinking = parsed.message?.thinking || "";
-            const token = parsed.message?.content || "";
-            const out = `${thinking}${token}`;
-            if (out) {
-              controller.enqueue(encoder.encode(out));
+          const tail = buffer.trim();
+          if (tail) {
+            const parsed = tryParseOllamaChunk(tail);
+            if (parsed) {
+              enqueueTokens(parsed, encoder, controller);
+            } else {
+              maybeEnqueuePlainTextTail(tail, encoder, controller);
             }
           }
 

@@ -26,6 +26,8 @@ const STORAGE_KEY = "corby-ai-conversations";
 /** Opt-in only; older key `corby-ai-think-enabled` is cleared on load so thinking stays off by default. */
 const THINK_OPT_IN_KEY = "corby-ai-think-opt-in";
 const SELECTED_MODEL_KEY = "corby-ai-selected-model";
+/** Sent with each chat request so the admin dashboard can group questions by browser. */
+const CLIENT_ID_KEY = "corby-client-id";
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 /** Downscale camera shots so the UI stays responsive and payloads stay reasonable. */
 const IMAGE_MAX_EDGE_PX = 1792;
@@ -33,6 +35,18 @@ const JPEG_QUALITY = 0.82;
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getOrCreateClientId(): string {
+  if (typeof window === "undefined") {
+    return "anonymous";
+  }
+  let id = window.localStorage.getItem(CLIENT_ID_KEY);
+  if (!id) {
+    id = uid();
+    window.localStorage.setItem(CLIENT_ID_KEY, id);
+  }
+  return id;
 }
 
 function shortTitleFromMessage(message: string) {
@@ -430,6 +444,7 @@ export default function Home() {
           messages: toApiMessages(updatedMessages, selectedModel),
           think: thinkEnabled,
           model: selectedModel,
+          clientId: getOrCreateClientId(),
         }),
       });
 
