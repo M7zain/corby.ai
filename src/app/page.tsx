@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { CHAT_MODELS } from "@/lib/chat-models";
+import { type ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { CHAT_MODELS, VISION_MODEL_ID } from "@/lib/chat-models";
 
 type Role = "user" | "assistant";
 
@@ -10,6 +10,8 @@ type ChatMessage = {
   role: Role;
   content: string;
   createdAt: string;
+  /** Data URLs for display & storage; sent as raw base64 when using the vision model. */
+  imageDataUrls?: string[];
 };
 
 type Conversation = {
@@ -24,6 +26,7 @@ const STORAGE_KEY = "corby-ai-conversations";
 /** Opt-in only; older key `corby-ai-think-enabled` is cleared on load so thinking stays off by default. */
 const THINK_OPT_IN_KEY = "corby-ai-think-opt-in";
 const SELECTED_MODEL_KEY = "corby-ai-selected-model";
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -77,6 +80,30 @@ function parseContentBlocks(content: string): ContentBlock[] {
   return blocks.length > 0 ? blocks : [{ type: "text", value: content }];
 }
 
+function dataUrlToBase64(dataUrl: string): string {
+  const marker = "base64,";
+  const idx = dataUrl.indexOf(marker);
+  if (idx !== -1) {
+    return dataUrl.slice(idx + marker.length);
+  }
+  const comma = dataUrl.indexOf(",");
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+}
+
+function toApiMessages(messages: ChatMessage[], model: string) {
+  const allowImages = model === VISION_MODEL_ID;
+  return messages.map((m) => {
+    const row: { role: Role; content: string; images?: string[] } = {
+      role: m.role,
+      content: m.content,
+    };
+    if (allowImages && m.imageDataUrls?.length) {
+      row.images = m.imageDataUrls.map(dataUrlToBase64);
+    }
+    return row;
+  });
+}
+
 export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -92,6 +119,8 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   const streamAccumRef = useRef("");
   const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingImageDataUrl, setPendingImageDataUrl] = useState<string | null>(null);
 
   useEffect(() => {
     window.localStorage.removeItem("corby-ai-think-enabled");
@@ -110,6 +139,12 @@ export default function Home() {
 
   useEffect(() => {
     window.localStorage.setItem(SELECTED_MODEL_KEY, selectedModel);
+  }, [selectedModel]);
+
+  useEffect(() => {
+    if (selectedModel !== VISION_MODEL_ID) {
+      setPendingImageDataUrl(null);
+    }
   }, [selectedModel]);
 
   useEffect(() => {
@@ -212,24 +247,61 @@ export default function Home() {
     });
   }
 
+  function onPickImage(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      setError("Please choose an image file.");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setError(`Image must be under ${MAX_IMAGE_BYTES / (1024 * 1024)} MB.`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === "string") {
+        setPendingImageDataUrl(result);
+        setError(null);
+      }
+    };
+    reader.onerror = () => setError("Could not read that image.");
+    reader.readAsDataURL(file);
+  }
+
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = input.trim();
-    if (!text || !activeConversation || isLoading) {
+    const hasVisionImage =
+      selectedModel === VISION_MODEL_ID && pendingImageDataUrl !== null;
+    if ((!text && !hasVisionImage) || !activeConversation || isLoading) {
       return;
     }
+
+    const userContent = text || "What do you see in this image? Describe it clearly.";
+    const imageUrls =
+      selectedModel === VISION_MODEL_ID && pendingImageDataUrl
+        ? [pendingImageDataUrl]
+        : undefined;
+
+    setPendingImageDataUrl(null);
 
     const userMessage: ChatMessage = {
       id: uid(),
       role: "user",
-      content: text,
+      content: userContent,
       createdAt: new Date().toISOString(),
+      ...(imageUrls ? { imageDataUrls: imageUrls } : {}),
     };
 
     const updatedMessages = [...activeConversation.messages, userMessage];
     const chatTitle =
       activeConversation.title === "New chat"
-        ? shortTitleFromMessage(text)
+        ? shortTitleFromMessage(userContent)
         : activeConversation.title;
 
     const chatId = activeConversation.id;
@@ -264,7 +336,7 @@ export default function Home() {
         },
         signal: controller.signal,
         body: JSON.stringify({
-          messages: updatedMessages.map(({ role, content }) => ({ role, content })),
+          messages: toApiMessages(updatedMessages, selectedModel),
           think: thinkEnabled,
           model: selectedModel,
         }),
@@ -564,6 +636,11 @@ export default function Home() {
                 </option>
               ))}
             </select>
+            {selectedModel === VISION_MODEL_ID && (
+              <p className="mt-2 text-xs leading-relaxed text-zinc-500">
+                Photo upload works only with <span className="text-zinc-400">corby 2.0</span> (vision).
+              </p>
+            )}
           </header>
 
           <div
@@ -587,6 +664,19 @@ export default function Home() {
                   <p className="mb-1 text-xs uppercase tracking-wider opacity-70">
                     {message.role === "user" ? "You" : "corby.ai"}
                   </p>
+                  {message.imageDataUrls && message.imageDataUrls.length > 0 && (
+                    <div className="mb-2 space-y-2">
+                      {message.imageDataUrls.map((src, idx) => (
+                        // eslint-disable-next-line @next/next/no-img-element -- user-uploaded data URLs
+                        <img
+                          key={`${message.id}-img-${idx}`}
+                          src={src}
+                          alt="Attached"
+                          className="max-h-56 w-full rounded-lg border border-black/10 object-contain sm:max-h-64"
+                        />
+                      ))}
+                    </div>
+                  )}
                   {renderMessageContent(message.content, message.id)}
                 </div>
               ))
@@ -658,11 +748,64 @@ export default function Home() {
                 Thinking: {thinkEnabled ? "On" : "Off"}
               </button>
             </div>
+            {selectedModel === VISION_MODEL_ID && (
+              <div className="mb-3 rounded-xl border border-zinc-700/80 bg-zinc-950/60 p-3">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  onChange={onPickImage}
+                  aria-label="Upload image for analysis"
+                />
+                {pendingImageDataUrl ? (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- user data URL preview */}
+                    <img
+                      src={pendingImageDataUrl}
+                      alt="Ready to send"
+                      className="max-h-36 w-full max-w-xs rounded-lg border border-zinc-600 object-contain"
+                    />
+                    <div className="flex shrink-0 flex-col gap-2 sm:pt-0">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isLoading}
+                        className="min-h-10 touch-manipulation rounded-lg border border-zinc-600 px-3 py-2 text-xs font-medium text-zinc-300 active:bg-zinc-800 disabled:opacity-50"
+                      >
+                        Change photo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPendingImageDataUrl(null)}
+                        disabled={isLoading}
+                        className="min-h-10 touch-manipulation rounded-lg border border-red-500/40 px-3 py-2 text-xs font-medium text-red-300 active:bg-red-950/50 disabled:opacity-50"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isLoading}
+                    className="flex min-h-11 w-full touch-manipulation items-center justify-center rounded-xl border border-dashed border-cyan-500/40 bg-cyan-500/5 px-4 py-3 text-sm font-medium text-cyan-200/90 active:bg-cyan-500/10 disabled:opacity-50 sm:w-auto sm:px-6"
+                  >
+                    Add photo to analyze
+                  </button>
+                )}
+              </div>
+            )}
             <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
               <input
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
-                placeholder="Message corby.ai…"
+                placeholder={
+                  selectedModel === VISION_MODEL_ID && pendingImageDataUrl
+                    ? "Optional: ask about the photo…"
+                    : "Message corby.ai…"
+                }
                 enterKeyHint="send"
                 className="min-h-11 w-full flex-1 touch-manipulation rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-base outline-none ring-cyan-300 placeholder:text-zinc-500 focus:ring-2 sm:min-h-10 sm:text-sm"
               />

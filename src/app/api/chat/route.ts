@@ -7,6 +7,8 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "corby:latest";
 type OllamaChatMessage = {
   role: "user" | "assistant" | "system";
   content: string;
+  /** Base64-encoded image bytes (no data: prefix), per Ollama chat API. */
+  images?: string[];
 };
 
 type ChatRequest = {
