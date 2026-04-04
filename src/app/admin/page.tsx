@@ -16,6 +16,7 @@ type RecentRow = {
   model: string;
   preview: string;
   hasImage: boolean;
+  imageCount?: number;
 };
 
 type Overview = {
@@ -229,7 +230,9 @@ export default function AdminDashboardPage() {
                       <p className="mt-1 text-zinc-300">{r.preview}</p>
                       <p className="mt-1 text-xs text-zinc-600">
                         {r.model}
-                        {r.hasImage ? " · image" : ""}
+                        {r.hasImage || (r.imageCount ?? 0) > 0
+                          ? ` · ${r.imageCount ?? 1} image${(r.imageCount ?? 1) === 1 ? "" : "s"}`
+                          : ""}
                       </p>
                     </li>
                   ))

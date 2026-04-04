@@ -32,6 +32,16 @@ try {
     .filter(Boolean)) {
     await conn.query(statement);
   }
+  try {
+    await conn.query(
+      "ALTER TABLE question_events ADD COLUMN images_base64_json LONGTEXT NULL",
+    );
+    console.log("Added column images_base64_json.");
+  } catch (e) {
+    if (e?.code !== "ER_DUP_FIELDNAME") {
+      throw e;
+    }
+  }
   console.log("Migration OK: question_events table ready.");
 } finally {
   await conn.end();

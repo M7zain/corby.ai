@@ -104,11 +104,13 @@ export async function POST(request: Request) {
 
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (lastUser?.content?.trim()) {
+      const imgs = lastUser.images?.filter((s) => typeof s === "string" && s.length > 0) ?? [];
       void logUserQuestion({
         clientId,
         model: requestedModel,
         question: lastUser.content.trim(),
-        hasImage: Boolean(lastUser.images && lastUser.images.length > 0),
+        hasImage: imgs.length > 0,
+        imagesBase64: imgs.length > 0 ? imgs : null,
       });
     }
 

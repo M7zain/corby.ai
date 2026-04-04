@@ -1,7 +1,11 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { ADMIN_COOKIE, verifyAdminSessionCookie } from "@/lib/admin-auth";
-import { readAllQuestionEvents, summarizeByClient } from "@/lib/chat-log";
+import {
+  countImagesInStoredJson,
+  readAllQuestionEvents,
+  summarizeByClient,
+} from "@/lib/chat-log";
 
 export async function GET() {
   const password = process.env.ADMIN_PASSWORD;
@@ -29,6 +33,7 @@ export async function GET() {
       model: e.model,
       preview: e.question.length > 160 ? `${e.question.slice(0, 160)}…` : e.question,
       hasImage: e.hasImage,
+      imageCount: countImagesInStoredJson(e.imagesBase64Json),
     }));
 
   return NextResponse.json({

@@ -9,6 +9,8 @@ export type QuestionLogEvent = {
   model: string;
   question: string;
   hasImage: boolean;
+  /** JSON array of raw base64 strings (Ollama format), when stored */
+  imagesBase64Json?: string | null;
 };
 
 interface QuestionRow extends RowDataPacket {
@@ -16,11 +18,50 @@ interface QuestionRow extends RowDataPacket {
   model: string;
   question: string;
   has_image: number;
+  images_base64_json: string | null;
   created_at: Date | string;
 }
 
 const dataDir = path.join(process.cwd(), "data");
 const logFile = path.join(dataDir, "user-questions.jsonl");
+
+/** ~4.5 MiB decoded per image cap; total payload cap for LONGTEXT safety */
+const MAX_BASE64_CHARS_PER_IMAGE = 6 * 1024 * 1024;
+const MAX_TOTAL_JSON_CHARS = 14 * 1024 * 1024;
+
+export function serializeImagesBase64Json(images: string[] | undefined | null): string | null {
+  if (!images?.length) {
+    return null;
+  }
+  const trimmed = images.map((s) =>
+    s.length > MAX_BASE64_CHARS_PER_IMAGE ? s.slice(0, MAX_BASE64_CHARS_PER_IMAGE) : s,
+  );
+  let json = JSON.stringify(trimmed);
+  if (json.length <= MAX_TOTAL_JSON_CHARS) {
+    return json;
+  }
+  if (trimmed[0]) {
+    let one = trimmed[0];
+    const budget = MAX_TOTAL_JSON_CHARS - 20;
+    if (one.length > budget) {
+      one = one.slice(0, budget);
+    }
+    json = JSON.stringify([one]);
+  }
+  return json;
+}
+
+export function countImagesInStoredJson(json: string | null | undefined): number {
+  if (!json) {
+    return 0;
+  }
+  try {
+    const a = JSON.parse(json) as unknown;
+    return Array.isArray(a) ? a.length : 0;
+  } catch {
+    return 0;
+  }
+}
 
 function rowToEvent(r: QuestionRow): QuestionLogEvent {
   const at =
@@ -35,6 +76,7 @@ function rowToEvent(r: QuestionRow): QuestionLogEvent {
     model: r.model,
     question: r.question,
     hasImage: Boolean(r.has_image),
+    imagesBase64Json: r.images_base64_json ?? null,
   };
 }
 
@@ -43,17 +85,21 @@ export async function logUserQuestion(entry: {
   model: string;
   question: string;
   hasImage: boolean;
+  imagesBase64?: string[] | null;
 }): Promise<void> {
+  const imagesJson = serializeImagesBase64Json(entry.imagesBase64 ?? null);
+
   const pool = getMysqlPool();
   if (pool) {
     try {
       await pool.execute(
-        `INSERT INTO question_events (client_id, model, question, has_image) VALUES (?, ?, ?, ?)`,
+        `INSERT INTO question_events (client_id, model, question, has_image, images_base64_json) VALUES (?, ?, ?, ?, ?)`,
         [
           entry.clientId.slice(0, 128),
           entry.model.slice(0, 64),
           entry.question.slice(0, 8000),
           entry.hasImage ? 1 : 0,
+          imagesJson,
         ],
       );
     } catch (err) {
@@ -70,6 +116,7 @@ export async function logUserQuestion(entry: {
       model: entry.model.slice(0, 64),
       question: entry.question.slice(0, 8000),
       hasImage: entry.hasImage,
+      imagesBase64Json: imagesJson,
     };
     await appendFile(logFile, `${JSON.stringify(line)}\n`, "utf8");
   } catch (err) {
@@ -82,7 +129,7 @@ export async function readAllQuestionEvents(): Promise<QuestionLogEvent[]> {
   if (pool) {
     try {
       const [rows] = await pool.execute<QuestionRow[]>(
-        `SELECT client_id, model, question, has_image, created_at
+        `SELECT client_id, model, question, has_image, images_base64_json, created_at
          FROM question_events
          ORDER BY created_at ASC`,
       );
