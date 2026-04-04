@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { ADMIN_COOKIE, verifyAdminSessionCookie } from "@/lib/admin-auth";
 import {
   countImagesInStoredJson,
+  parseStoredImagesJsonToDataUrls,
   readAllQuestionEvents,
   summarizeByClient,
 } from "@/lib/chat-log";
@@ -34,6 +35,7 @@ export async function GET() {
       preview: e.question.length > 160 ? `${e.question.slice(0, 160)}…` : e.question,
       hasImage: e.hasImage,
       imageCount: countImagesInStoredJson(e.imagesBase64Json),
+      imagesDataUrls: parseStoredImagesJsonToDataUrls(e.imagesBase64Json),
     }));
 
   return NextResponse.json({

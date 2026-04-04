@@ -17,6 +17,8 @@ type RecentRow = {
   preview: string;
   hasImage: boolean;
   imageCount?: number;
+  /** Data URLs for thumbnails (admin-only). */
+  imagesDataUrls?: string[];
 };
 
 type Overview = {
@@ -218,7 +220,14 @@ export default function AdminDashboardPage() {
                 {overview.recent.length === 0 ? (
                   <li className="text-zinc-500">No entries yet.</li>
                 ) : (
-                  overview.recent.map((r, i) => (
+                  overview.recent.map((r, i) => {
+                    const imageDisplayCount =
+                      (r.imagesDataUrls?.length ?? 0) > 0
+                        ? r.imagesDataUrls!.length
+                        : r.hasImage
+                          ? (r.imageCount ?? 1)
+                          : 0;
+                    return (
                     <li
                       key={`${r.at}-${r.clientId}-${i}`}
                       className="border-b border-zinc-800/60 pb-3 text-sm last:border-0 last:pb-0"
@@ -230,12 +239,34 @@ export default function AdminDashboardPage() {
                       <p className="mt-1 text-zinc-300">{r.preview}</p>
                       <p className="mt-1 text-xs text-zinc-600">
                         {r.model}
-                        {r.hasImage || (r.imageCount ?? 0) > 0
-                          ? ` · ${r.imageCount ?? 1} image${(r.imageCount ?? 1) === 1 ? "" : "s"}`
+                        {imageDisplayCount > 0
+                          ? ` · ${imageDisplayCount} image${imageDisplayCount === 1 ? "" : "s"}`
                           : ""}
                       </p>
+                      {(r.imagesDataUrls?.length ?? 0) > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {r.imagesDataUrls!.map((src, j) => (
+                            <a
+                              key={j}
+                              href={src}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block shrink-0 rounded-lg border border-zinc-700 bg-zinc-900/60 ring-cyan-400/30 transition hover:ring-2"
+                            >
+                              <img
+                                src={src}
+                                alt=""
+                                loading="lazy"
+                                decoding="async"
+                                className="max-h-40 max-w-[min(100%,280px)] rounded-lg object-contain"
+                              />
+                            </a>
+                          ))}
+                        </div>
+                      )}
                     </li>
-                  ))
+                    );
+                  })
                 )}
               </ul>
             </section>

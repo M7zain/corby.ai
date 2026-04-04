@@ -63,6 +63,66 @@ export function countImagesInStoredJson(json: string | null | undefined): number
   }
 }
 
+function sniffImageMimeFromBase64Prefix(b64: string): string {
+  const t = b64.trim();
+  if (!t) {
+    return "image/jpeg";
+  }
+  try {
+    const buf = Buffer.from(t.slice(0, 64), "base64");
+    if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xd8) {
+      return "image/jpeg";
+    }
+    if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+      return "image/png";
+    }
+    if (buf.length >= 6 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
+      return "image/gif";
+    }
+    if (
+      buf.length >= 12 &&
+      buf.toString("ascii", 0, 4) === "RIFF" &&
+      buf.toString("ascii", 8, 12) === "WEBP"
+    ) {
+      return "image/webp";
+    }
+  } catch {
+    /* ignore */
+  }
+  return "image/jpeg";
+}
+
+/** Raw base64 (Ollama-style) → browser-usable data URL for `<img src>`. */
+export function storedBase64ToDataUrl(b64: string): string {
+  const t = b64.trim();
+  if (!t) {
+    return "";
+  }
+  if (t.startsWith("data:")) {
+    return t;
+  }
+  const mime = sniffImageMimeFromBase64Prefix(t);
+  return `data:${mime};base64,${t}`;
+}
+
+export function parseStoredImagesJsonToDataUrls(json: string | null | undefined): string[] {
+  if (!json) {
+    return [];
+  }
+  try {
+    const a = JSON.parse(json) as unknown;
+    if (!Array.isArray(a)) {
+      return [];
+    }
+    return a
+      .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+      .map(storedBase64ToDataUrl)
+      .filter((u) => u.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 function rowToEvent(r: QuestionRow): QuestionLogEvent {
   const at =
     r.created_at instanceof Date
